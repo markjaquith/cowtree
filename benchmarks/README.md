@@ -100,3 +100,24 @@ directory-relative clone/stat/rename operations and source-inventory reuse were
 not tested in this experiment. Eight workers clearly lost in the tested fused
 implementation; this does not establish an optimum for every implementation or
 machine.
+
+## Directory-relative cloning: September 10, 2026
+
+Cloning now caches one parent-directory handle pair per worker and uses
+`fstatat`, `clonefileat`, `fchmodat`, `utimensat`, `renameat`, and `unlinkat`.
+Final source/target identity checks still resolve the original full paths to
+detect replaced parents. The worker count and eligibility scan are unchanged.
+
+Compared with `fa6d9a9` on the same M1 Max/APFS setup, with refreshed indexes and
+three alternating rounds (roughly 4 KiB per file):
+
+| Fixture | Baseline median | Directory-relative median |
+| --- | ---: | ---: |
+| 20,000 files × 3 targets, depth 8 | 13.34 s | 13.28 s |
+| 100,000 files × 3 targets, depth 1 | 70.89 s | 71.00 s |
+
+Large-fixture individual times were baseline `[70.89, 71.74, 70.44]` seconds and
+directory-relative `[71.00, 71.68, 68.15]` seconds. These results are effectively
+tied: the implementation reduces full-path resolution but does **not** establish
+a measurable wall-clock speedup on these fixtures. It should not be presented
+as a proven performance gain.
