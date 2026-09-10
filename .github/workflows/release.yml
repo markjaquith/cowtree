@@ -68,3 +68,11 @@ jobs:
         with:
           files: cowtree-*.tar.gz*
           generate_release_notes: true
+
+  update-homebrew:
+    needs: [publish-crate, publish-github-release]
+    uses: ./.github/workflows/update-homebrew.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
