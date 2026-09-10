@@ -1,0 +1,56 @@
+name: Update Homebrew formula
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  update-homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: markjaquith/homebrew-tap
+          path: homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Update formula
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          url="https://github.com/markjaquith/cowtree/archive/refs/tags/${TAG}.tar.gz"
+          curl --fail --location --retry 3 --output cowtree.tar.gz "$url"
+          sha256="$(sha256sum cowtree.tar.gz | cut -d ' ' -f 1)"
+
+          ruby - homebrew-tap/Formula/cowtree.rb "$url" "$sha256" <<'RUBY'
+          path, url, sha256 = ARGV
+          formula = File.read(path)
+          stable = %(  url "#{url}"\n  sha256 "#{sha256}"\n)
+
+          unless formula.sub!(/^  url ".*"\n  sha256 ".*"\n/, stable)
+            formula.sub!(/^  head /, "#{stable}\n\\0") or abort "Could not update #{path}"
+          end
+
+          File.write(path, formula)
+          RUBY
+
+      - name: Commit formula update
+        working-directory: homebrew-tap
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/cowtree.rb
+
+          if git diff --cached --quiet; then
+            echo "Formula is already current"
+            exit 0
+          fi
+
+          git commit -m "Update cowtree to ${TAG}"
+          git push
