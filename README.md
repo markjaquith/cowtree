@@ -10,17 +10,20 @@ This can reduce the space that a worktree takes up on your disk by up to 95%.
 ## Usage
 
 ```sh
+# Just like `git worktree add`
 cowtree add ../feature -b feature
-cowtree add --detach ../review HEAD~3
 
+# For compacting existing worktrees
 cowtree compact feature/my-branch
 cowtree compact /path/to/detached-worktree --source main
 cowtree compact --all
 cowtree compact --all --dry-run
 
+# Estimate the space savings of compaction
 cowtree estimate feature/my-branch
 cowtree estimate --all --json
 
+# Get the compaction status
 cowtree status
 cowtree status feature/my-branch
 cowtree status --all --json
@@ -43,29 +46,10 @@ then lets Git materialize the remaining paths.
 Run other worktree commands directly through Git. `cowtree add` accepts the
 options and paths supported by `git worktree add`, without shell expansion or
 UTF-8 conversion. Unknown creation options that cannot safely be interpreted
-produce an explicit error rather than an ordinary checkout.
-
-Git handles branch naming, refs, tracking, force checks, and registration.
-Cowtree supports detached donors and independently verified clean files in dirty
-donors. Donors at the target commit are preferred, followed by the invoking
-worktree and other registered paths. No default branch or `--source` argument is
-required. Source payloads are hashed through the same open file descriptor used
-for cloning, with identity checks spanning hashing and cloning; source index
-trust flags cannot authorize dirty bytes.
-
-Checkout filters, encodings, line-ending conversions, `ident`, symlinks, and
-gitlinks are handled by Git or its native non-recursive checkout semantics.
-Sparse omissions remain absent. Files with source-specific extended attributes
-or file flags are materialized by Git; macOS's system-managed provenance
-attribute is allowed. Clones use target checkout modes and umask and inherit the
-destination directory's ACL, rather than the donor's ACL or privileged owner.
+will produce an error.
 
 **No ordinary-checkout fallback:** a nonempty checkout requires at least one
-verified clone on the destination APFS volume. Otherwise creation fails.
-Changed and ineligible files are still legitimately materialized by Git.
-Explicit `--no-checkout`, orphan worktrees, empty commits, and empty sparse
-selections retain their intentionally empty Git behavior without needing a
-donor or APFS. These exceptions do not create a sharing receipt.
+verified clone on the destination APFS volume.
 
 The usual `post-checkout` hook runs once after validation, with Git's arguments
 and target working directory. Hook failure retains the completed worktree and
@@ -91,7 +75,7 @@ skips those whose receipts are still current.
 For `compact` and `estimate`, the source defaults to the checked-out branch named
 by `origin/HEAD` (the remote's default branch), then `main`, then `master`. It must
 be clean and its HEAD must equal the selected branch tip. Source and target must
-be on the same APFS volume. `cowtree` never falls back to a full copy.
+be on the same APFS volume.
 
 ## Large checkouts
 
@@ -112,7 +96,7 @@ and receipt-skip timings.
 Git is the authority for tracked paths and checkout state. For each target,
 `cowtree` asks Git for every path that differs from the source commit, including
 committed divergence, staged changes, and unstaged changes. Those paths are
-excluded. Untracked and ignored files are never candidates. Symlinks,
+excluded. Untracked and ignored files are always skipped. Symlinks,
 submodules, sparse-checkout omissions, and special files are skipped.
 
 Before replacing a file, `cowtree` checks source and target device, inode, size,
