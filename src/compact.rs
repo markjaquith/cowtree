@@ -10,7 +10,7 @@ use crate::{
     eligibility,
     error::{Error, Result},
     git,
-    output::CompactResult,
+    output::{CompactOutcome, CompactResult},
     platform::{self, CloneOutcome, ClonePlatform, SystemPlatform},
     receipt::{self, Receipt, ReceiptState},
     worktree::Worktree,
@@ -52,6 +52,14 @@ pub fn is_current_receipt(source: &Worktree, target: &Worktree) -> bool {
     current
 }
 
+pub fn status(source: &Worktree, target: &Worktree) -> ReceiptState {
+    match receipt::read_for(target) {
+        Ok(None) => receipt::creation_state(target),
+        Ok(located) => receipt::state(located.as_ref(), &source.head, &target.head),
+        Err(_) => ReceiptState::Unknown,
+    }
+}
+
 pub fn compact_one(
     source: &Worktree,
     target: &Worktree,
@@ -62,6 +70,7 @@ pub fn compact_one(
             "cannot compact the source worktree against itself".into(),
         ));
     }
+    let initial_status = status(source, target);
     let started = Instant::now();
     let source_commit = validate_source(source)?;
     let platform = SystemPlatform;
@@ -106,22 +115,28 @@ pub fn compact_one(
         )?;
     }
     let outcome = if dry_run {
-        "dry_run"
+        CompactOutcome::DryRun
     } else if raced > 0 {
-        "compacted_with_race_skips"
+        CompactOutcome::CompactedWithChangedPathsSkipped
     } else {
-        "compacted"
+        CompactOutcome::Compacted
     };
     Ok((
         CompactResult {
-            worktree: target.path.to_string_lossy().into_owned(),
-            label: target.label(),
-            outcome: outcome.into(),
-            cloned_files: cloned,
-            eligible_files: eligible.paths.len() as u64,
-            eligible_logical_bytes: eligible.logical_bytes,
-            eligible_allocated_bytes: eligible.allocated_bytes,
-            skipped_divergent_paths: eligible.excluded_count as u64,
+            branch: target.branch.clone(),
+            path: target.path.to_string_lossy().into_owned(),
+            status: if dry_run {
+                initial_status
+            } else {
+                ReceiptState::Compacted
+            },
+            outcome,
+            cloned_files: (!dry_run).then_some(cloned),
+            eligible_files: Some(eligible.paths.len() as u64),
+            eligible_logical_bytes: Some(eligible.logical_bytes),
+            eligible_allocated_bytes: Some(eligible.allocated_bytes),
+            skipped_divergent_paths: Some(eligible.excluded_count as u64),
+            skipped_changed_paths: (!dry_run).then_some(raced),
             error: None,
         },
         started.elapsed().as_secs_f64(),

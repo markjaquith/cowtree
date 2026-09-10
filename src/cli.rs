@@ -10,7 +10,9 @@ use crate::{
     add, compact,
     error::{Error, Result},
     git,
-    output::{self, CompactResult, Envelope, StatusResult, Summary},
+    output::{
+        self, CompactOutcome, CompactResult, CompactSummary, CompactUi, Envelope, StatusResult,
+    },
     receipt::{self, ReceiptState},
     worktree::{self, Worktree},
 };
@@ -128,77 +130,57 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
     )?;
     let total = targets.len();
     let mut results = Vec::new();
-    let mut summary = Summary::default();
+    let mut summary = CompactSummary::default();
+    let mut ui = CompactUi::new();
     for (index, target) in targets.into_iter().enumerate() {
         if args.all && compact::is_current_receipt(&source, target) {
-            summary.skipped += 1;
+            summary.already_compacted += 1;
             if !args.json {
-                println!(
-                    "[{}/{}] skipping {} (current receipt)",
-                    index + 1,
-                    total,
-                    target.label()
-                );
+                ui.already_compacted(index + 1, total, &target.label());
             }
             results.push(CompactResult {
-                worktree: target.path.to_string_lossy().into_owned(),
-                label: target.label(),
-                outcome: "skipped_current_receipt".into(),
-                cloned_files: 0,
-                eligible_files: 0,
-                eligible_logical_bytes: 0,
-                eligible_allocated_bytes: 0,
-                skipped_divergent_paths: 0,
+                branch: target.branch.clone(),
+                path: target.path.to_string_lossy().into_owned(),
+                status: ReceiptState::Compacted,
+                outcome: CompactOutcome::AlreadyCompacted,
+                cloned_files: None,
+                eligible_files: None,
+                eligible_logical_bytes: None,
+                eligible_allocated_bytes: None,
+                skipped_divergent_paths: None,
+                skipped_changed_paths: None,
                 error: None,
             });
             continue;
         }
         if !args.json {
-            println!("[{}/{}] compacting {}", index + 1, total, target.label());
+            ui.start(index + 1, total, &target.label(), args.dry_run);
         }
         match compact::compact_one(&source, target, args.dry_run) {
             Ok((result, seconds)) => {
                 summary.compacted += usize::from(!args.dry_run);
-                summary.skipped += usize::from(args.dry_run);
+                summary.dry_run += usize::from(args.dry_run);
                 if !args.json {
-                    println!(
-                        "[{}/{}] {} {} files ({} eligible) in {:.1}s",
-                        index + 1,
-                        total,
-                        if args.dry_run {
-                            "would compact"
-                        } else {
-                            "compacted"
-                        },
-                        result
-                            .cloned_files
-                            .max(result.eligible_files * u64::from(args.dry_run)),
-                        output::bytes(result.eligible_allocated_bytes),
-                        seconds
-                    );
+                    ui.success(index + 1, total, &result, seconds, args.dry_run);
                 }
                 results.push(result);
             }
             Err(error) => {
                 summary.failed += 1;
                 if !args.json {
-                    eprintln!(
-                        "[{}/{}] failed {}: {}",
-                        index + 1,
-                        total,
-                        target.label(),
-                        error
-                    );
+                    ui.failed(index + 1, total, &target.label(), &error);
                 }
                 results.push(CompactResult {
-                    worktree: target.path.to_string_lossy().into_owned(),
-                    label: target.label(),
-                    outcome: "failed".into(),
-                    cloned_files: 0,
-                    eligible_files: 0,
-                    eligible_logical_bytes: 0,
-                    eligible_allocated_bytes: 0,
-                    skipped_divergent_paths: 0,
+                    branch: target.branch.clone(),
+                    path: target.path.to_string_lossy().into_owned(),
+                    status: compact::status(&source, target),
+                    outcome: CompactOutcome::Failed,
+                    cloned_files: None,
+                    eligible_files: None,
+                    eligible_logical_bytes: None,
+                    eligible_allocated_bytes: None,
+                    skipped_divergent_paths: None,
+                    skipped_changed_paths: None,
                     error: Some(error.to_string()),
                 });
                 if !args.all {
@@ -208,12 +190,9 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
         }
     }
     if args.json {
-        print_json("compact", results, summary)?;
+        print_json("compact", results, Some(summary))?;
     } else {
-        println!(
-            "complete: {} compacted, {} skipped, {} failed",
-            summary.compacted, summary.skipped, summary.failed
-        );
+        ui.summary(summary);
     }
     if summary.failed > 0 {
         Err(Error::Message(format!(
@@ -226,7 +205,22 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
 }
 
 fn run_status(cwd: &Path, worktrees: &[Worktree], args: StatusArgs) -> Result<()> {
-    let targets = targets_for(cwd, worktrees, args.target.as_ref(), args.all, None)?;
+    let source = worktree::default_source(worktrees, cwd)?;
+    let targets = targets_for(
+        cwd,
+        worktrees,
+        args.target.as_ref(),
+        args.all,
+        Some(&source),
+    )?;
+    if targets
+        .first()
+        .is_some_and(|target| target.path == source.path)
+    {
+        return Err(Error::Message(
+            "cannot check compaction status of the source worktree against itself".into(),
+        ));
+    }
     let mut results = Vec::new();
     for target in targets {
         let located = receipt::read_for(target)?;
@@ -249,17 +243,16 @@ fn run_status(cwd: &Path, worktrees: &[Worktree], args: StatusArgs) -> Result<()
             }
         };
         let result = StatusResult {
-            worktree: target.path.to_string_lossy().into_owned(),
-            label: target.label(),
-            state,
+            branch: target.branch.clone(),
+            path: target.path.to_string_lossy().into_owned(),
+            status: state,
         };
-        if !args.json {
-            println!("{}: {} ({})", state.as_str(), result.label, result.worktree);
-        }
         results.push(result);
     }
     if args.json {
-        print_json("status", results, Summary::default())?;
+        print_json("status", results, None)?;
+    } else {
+        output::print_status(&results);
     }
     Ok(())
 }
@@ -267,12 +260,12 @@ fn run_status(cwd: &Path, worktrees: &[Worktree], args: StatusArgs) -> Result<()
 fn print_json<T: serde::Serialize>(
     command: &'static str,
     results: Vec<T>,
-    summary: Summary,
+    summary: Option<CompactSummary>,
 ) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(&Envelope {
-            schema_version: 1,
+            schema_version: 2,
             command,
             results,
             summary

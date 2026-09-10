@@ -133,7 +133,38 @@ fn clone_first_is_clean_and_independent_and_has_creation_status() {
     assert_eq!(fs::read(target.join("changed")).unwrap(), b"before\n");
     let output = f.cow(&["status", target.to_str().unwrap(), "--json"]);
     success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("\"created\""));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["results"][0]["branch"], "feature");
+    let canonical_target = target.canonicalize().unwrap();
+    assert_eq!(
+        json["results"][0]["path"],
+        canonical_target.to_str().unwrap()
+    );
+    assert_eq!(json["results"][0]["status"], "created");
+    assert!(json.get("summary").is_none());
+
+    let output = f.cow(&["status", target.to_str().unwrap()]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("feature — "));
+    assert!(stdout.contains(&format!(
+        "{}  ◆ created",
+        canonical_target.to_str().unwrap()
+    )));
+
+    let source_status = f.cow(&["status"]);
+    assert!(!source_status.status.success());
+    assert!(
+        String::from_utf8_lossy(&source_status.stderr)
+            .contains("cannot check compaction status of the source worktree against itself")
+    );
+
+    let all = f.cow(&["status", "--all", "--json"]);
+    success(&all);
+    let json: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
+    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["results"][0]["branch"], "feature");
 }
 
 #[test]

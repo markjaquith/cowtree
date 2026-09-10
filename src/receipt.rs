@@ -120,19 +120,6 @@ pub enum ReceiptState {
     Unknown,
 }
 
-impl ReceiptState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Compacted => "compacted",
-            Self::Created => "created",
-            Self::Stale => "stale",
-            Self::NotCompacted => "not_compacted",
-            Self::Invalid => "invalid",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct LocatedReceipt {
     pub receipt: Receipt,

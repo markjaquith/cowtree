@@ -103,6 +103,16 @@ fn retry_removes_only_stale_clone_files_and_dry_run_removes_nothing() {
         fs::write(path, "temporary clone").unwrap();
     }
 
+    let dry_run_json = compact(&repo, &["compact", "feature", "--dry-run", "--json"]);
+    assert!(dry_run_json.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&dry_run_json.stdout).unwrap();
+    assert_eq!(json["results"][0]["branch"], "feature");
+    assert_eq!(json["results"][0]["status"], "not_compacted");
+    assert_eq!(json["results"][0]["outcome"], "dry_run");
+    assert!(json["results"][0].get("cloned_files").is_none());
+    assert!(json["results"][0]["eligible_files"].as_u64().unwrap() > 0);
+    assert_eq!(json["summary"]["dry_run"], 1);
+
     let dry_run = compact(&repo, &["compact", "feature", "--dry-run"]);
     assert!(dry_run.status.success());
     assert!(stale.exists());
@@ -165,10 +175,15 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
     }
 
     let first = compact_all(&repo);
-    assert_eq!(first["schema_version"], 1);
+    assert_eq!(first["schema_version"], 2);
     assert_eq!(
         first["summary"],
-        serde_json::json!({"compacted": 2, "skipped": 0, "failed": 0})
+        serde_json::json!({
+            "compacted": 2,
+            "already_compacted": 0,
+            "dry_run": 0,
+            "failed": 0
+        })
     );
     let results = first["results"].as_array().unwrap();
     assert_eq!(results.len(), 2);
@@ -178,8 +193,10 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
         let canonical_target = target.canonicalize().unwrap();
         let result = results
             .iter()
-            .find(|result| result["worktree"] == canonical_target.to_str().unwrap())
+            .find(|result| result["path"] == canonical_target.to_str().unwrap())
             .unwrap();
+        assert_eq!(result["branch"], branch);
+        assert_eq!(result["status"], "compacted");
         assert_eq!(result["outcome"], "compacted");
         assert_eq!(result["cloned_files"], 1);
         assert_eq!(fs::read_to_string(target.join("same")).unwrap(), "same\n");
@@ -214,7 +231,12 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
         let batch = compact_all(&repo);
         assert_eq!(
             batch["summary"],
-            serde_json::json!({"compacted": compacted, "skipped": skipped, "failed": 0})
+            serde_json::json!({
+                "compacted": compacted,
+                "already_compacted": skipped,
+                "dry_run": 0,
+                "failed": 0
+            })
         );
         let results = batch["results"].as_array().unwrap();
         assert_eq!(results.len(), 3);
@@ -222,14 +244,16 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
             let target = root.path().join(branch).canonicalize().unwrap();
             let result = results
                 .iter()
-                .find(|result| result["worktree"] == target.to_str().unwrap())
+                .find(|result| result["path"] == target.to_str().unwrap())
                 .unwrap();
+            assert_eq!(result["branch"], branch);
+            assert_eq!(result["status"], "compacted");
             if branch == "feature-three" && compacted == 1 {
                 assert_eq!(result["outcome"], "compacted");
                 assert_eq!(result["cloned_files"], 1);
             } else {
-                assert_eq!(result["outcome"], "skipped_current_receipt");
-                assert_eq!(result["cloned_files"], 0);
+                assert_eq!(result["outcome"], "already_compacted");
+                assert!(result.get("cloned_files").is_none());
             }
             assert_eq!(fs::read_to_string(target.join("same")).unwrap(), "same\n");
         }
@@ -240,6 +264,19 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
         }
         assert!(!repo.join(".git/cowtree-compaction").exists());
     }
+
+    let human = compact(&repo, &["compact", "--all"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with('•') && line.contains("already compacted"))
+            .count(),
+        3
+    );
+    assert!(!stdout.contains("current receipt"));
+    assert!(stdout.contains("Done"));
 }
 
 #[test]
@@ -304,7 +341,7 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
         String::from_utf8_lossy(&compact.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&compact.stdout).unwrap();
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(json["results"][0]["cloned_files"], 1025);
     let after = fs::metadata(target.join("nested/0/0.txt")).unwrap();
     assert_ne!(before.ino(), after.ino());
@@ -369,7 +406,7 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(json["results"][0]["state"], "compacted");
+    assert_eq!(json["results"][0]["status"], "compacted");
     assert!(receipt.is_file());
     assert!(!legacy_receipt.exists());
 }
