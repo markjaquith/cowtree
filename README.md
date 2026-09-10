@@ -28,10 +28,6 @@ cowtree compact /path/to/detached-worktree --source main
 cowtree compact --all
 cowtree compact --all --dry-run
 
-# Estimate the space savings of compaction
-cowtree estimate feature/my-branch
-cowtree estimate --all --json
-
 # Get the compaction status
 cowtree status
 cowtree status feature/my-branch
@@ -70,7 +66,7 @@ than running destructive Git commands.
 With `--all`, `cowtree` keeps track of which worktrees have been compacted and
 skips those whose receipts are still current.
 
-For `compact` and `estimate`, the source defaults to the checked-out branch
+For `compact`, the source defaults to the checked-out branch
 named by `origin/HEAD` (the remote's default branch), then `main`, then
 `master`. It must be clean and its HEAD must equal the selected branch tip.
 Source and target must be on the same APFS volume.
@@ -85,12 +81,12 @@ and receipt-skip timings.
 > either worktree during compaction. Cowtree detects most concurrent changes and
 > skips affected files, but a small unavoidable race window remains.
 
-## Savings estimates
+## Previewing compaction
 
-`estimate` reports eligible logical bytes and attributed allocated bytes. The
-latter is an upper bound; existing shared extents, snapshots, and APFS overhead
-can make actual savings differ. `du` does not report unique usage for shared
-blocks.
+`compact --dry-run` reports eligible files and attributed allocated bytes without
+replacing files. The attributed size is an upper bound; existing shared extents,
+snapshots, and APFS overhead can make actual savings differ. `du` does not report
+unique usage for shared blocks.
 
 ## Contributing
 

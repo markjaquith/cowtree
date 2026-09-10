@@ -32,20 +32,6 @@ pub struct CompactResult {
 }
 
 #[derive(Debug, Serialize)]
-pub struct EstimateResult {
-    pub worktree: String,
-    pub label: String,
-    pub eligible_files: u64,
-    pub eligible_logical_bytes: u64,
-    pub eligible_allocated_bytes: u64,
-    pub skipped_divergent_paths: u64,
-    pub current_receipt: bool,
-    pub outcome: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct StatusResult {
     pub worktree: String,
     pub label: String,

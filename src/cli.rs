@@ -31,7 +31,6 @@ enum Command {
     /// Create a copy-on-write worktree
     Add(AddArgs),
     Compact(OperationArgs),
-    Estimate(OperationArgs),
     Status(StatusArgs),
 }
 
@@ -80,7 +79,6 @@ pub fn run(cli: Cli) -> Result<i32> {
     let worktrees = worktree::discover(&cwd)?;
     match command {
         Command::Compact(args) => run_compact(&cwd, &worktrees, args)?,
-        Command::Estimate(args) => run_estimate(&cwd, &worktrees, args)?,
         Command::Status(args) => run_status(&cwd, &worktrees, args)?,
         Command::Add(_) => unreachable!(),
     };
@@ -212,78 +210,6 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
             "complete: {} compacted, {} skipped, {} failed",
             summary.compacted, summary.skipped, summary.failed
         );
-    }
-    if summary.failed > 0 {
-        Err(Error::Message(format!(
-            "{} target(s) failed",
-            summary.failed
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-fn run_estimate(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Result<()> {
-    if args.dry_run {
-        return Err(Error::Message(
-            "--dry-run is only valid with compact".into(),
-        ));
-    }
-    if !args.all && args.target.is_none() {
-        return Err(Error::Message("estimate requires a target or --all".into()));
-    }
-    let source = source_for(cwd, worktrees, args.source.as_ref())?;
-    compact::validate_source(&source)?;
-    let targets = targets_for(
-        cwd,
-        worktrees,
-        args.target.as_ref(),
-        args.all,
-        Some(&source),
-    )?;
-    let mut results = Vec::new();
-    let mut summary = Summary::default();
-    for target in targets {
-        match compact::estimate_one(&source, target) {
-            Ok(result) => {
-                if !args.json {
-                    println!(
-                        "{}: {} eligible files, {} logical, {} attributed (upper bound), {} divergent/dirty paths{}",
-                        result.label,
-                        result.eligible_files,
-                        output::bytes(result.eligible_logical_bytes),
-                        output::bytes(result.eligible_allocated_bytes),
-                        result.skipped_divergent_paths,
-                        if result.current_receipt {
-                            ", current receipt"
-                        } else {
-                            ""
-                        }
-                    );
-                }
-                results.push(result);
-            }
-            Err(error) => {
-                summary.failed += 1;
-                if !args.json {
-                    eprintln!("{}: failed: {}", target.label(), error);
-                }
-                results.push(crate::output::EstimateResult {
-                    worktree: target.path.to_string_lossy().into_owned(),
-                    label: target.label(),
-                    eligible_files: 0,
-                    eligible_logical_bytes: 0,
-                    eligible_allocated_bytes: 0,
-                    skipped_divergent_paths: 0,
-                    current_receipt: false,
-                    outcome: "failed".into(),
-                    error: Some(error.to_string()),
-                });
-            }
-        }
-    }
-    if args.json {
-        print_json("estimate", results, summary)?;
     }
     if summary.failed > 0 {
         Err(Error::Message(format!(

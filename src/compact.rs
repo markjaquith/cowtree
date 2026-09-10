@@ -10,7 +10,7 @@ use crate::{
     eligibility,
     error::{Error, Result},
     git,
-    output::{CompactResult, EstimateResult},
+    output::CompactResult,
     platform::{self, CloneOutcome, ClonePlatform, SystemPlatform},
     receipt::{self, Receipt, ReceiptState},
     worktree::Worktree,
@@ -202,28 +202,6 @@ fn clone_paths_with_workers(
             }
         }
         error.map_or(Ok(total), Err)
-    })
-}
-
-pub fn estimate_one(source: &Worktree, target: &Worktree) -> Result<EstimateResult> {
-    if source.path == target.path {
-        return Err(Error::Message(
-            "cannot estimate the source worktree against itself".into(),
-        ));
-    }
-    let source_commit = validate_source(source)?;
-    SystemPlatform.validate(&source.path, &target.path)?;
-    let eligible = eligibility::calculate(source, target, &source_commit)?;
-    Ok(EstimateResult {
-        worktree: target.path.to_string_lossy().into_owned(),
-        label: target.label(),
-        eligible_files: eligible.paths.len() as u64,
-        eligible_logical_bytes: eligible.logical_bytes,
-        eligible_allocated_bytes: eligible.allocated_bytes,
-        skipped_divergent_paths: eligible.excluded_count as u64,
-        current_receipt: is_current_receipt(source, target),
-        outcome: "estimated".into(),
-        error: None,
     })
 }
 
