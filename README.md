@@ -43,12 +43,6 @@ Path parsing avoids copying Git's exclusion list, and validated parent
 directories are cached during eligibility scanning. Cloning retains per-file
 race checks; all workers finish before final validation and receipt creation.
 
-Each clone worker caches one source/target parent-directory handle pair and uses
-directory-relative operations for initial metadata reads, cloning, metadata
-restoration, replacement, and cleanup. Final file identity checks resolve the
-original full paths so cached handles do not hide replaced parent directories.
-The cache is bounded and is discarded on a skip or error.
-
 See [the benchmark guide](benchmarks/README.md) for reproducible large-checkout
 and receipt-skip timings.
 
