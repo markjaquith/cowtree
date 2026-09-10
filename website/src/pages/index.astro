@@ -4,7 +4,7 @@ const pageUrl = "https://markjaquith.github.io/cowtree/";
 const socialImageUrl = `${pageUrl}social-card.png`;
 const description =
   "Space-efficient Git worktrees on macOS using APFS copy-on-write clones.";
-const baseUrl = import.meta.env.BASE_URL;
+const assetBaseUrl = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/`;
 ---
 
 <!doctype html>
@@ -81,10 +81,10 @@ cowtree status --all</code></pre>
               <p>COW means copy-on-write. Please remove me from your mailing list.</p>
             </blockquote>
           </div>
-          <img src={`${baseUrl}cow.png`} alt="Illustrated Highland cow" width="112" height="103" />
+          <img src={`${assetBaseUrl}cow.png`} alt="Illustrated Highland cow" width="112" height="103" />
         </figure>
         <figure class="pull-quote">
-          <img src={`${baseUrl}tree.png`} alt="Illustrated oak tree" width="92" height="105" />
+          <img src={`${assetBaseUrl}tree.png`} alt="Illustrated oak tree" width="92" height="105" />
           <div>
             <blockquote>
               <p>You nerds need to touch grass.</p>
