@@ -1,78 +1,58 @@
 # cowtree
 
-`cowtree` is a Git worktree utility for macOS that uses copy-on-write (COW) to
-reduce the physical storage used by worktrees. For existing worktrees, it finds
-tracked files that Git says are unchanged from a clean source worktree, clones
-them with `clonefile(2)`, and atomically replaces the target copies. APFS shares
-the cloned data until either copy is modified. You can also use `cowtree` to
-create new Git worktrees that will use copy-on-write from the start.
-
-This can reduce the space that a worktree takes up on your disk by up to 95%.
+`cowtree` creates space-efficient Git worktrees on macOS using APFS
+copy-on-write clones. It can also compact existing worktrees, reducing their
+physical storage by up to 95%.
 
 > [!NOTE]
 >
-> Cowtree is only for macOS systems using APFS. Linux users already have better
-> options, such as
-> [Btrfs reflinks](https://btrfs.readthedocs.io/en/latest/Reflink.html), for
-> efficient copy-on-write file copies.
+> Cowtree requires macOS and APFS. Linux users already have alternatives such as
+> [Btrfs reflinks](https://btrfs.readthedocs.io/en/latest/Reflink.html).
+
+## Install
+
+```sh
+brew install markjaquith/tap/cowtree
+```
 
 ## Usage
 
 ```sh
-# Just like `git worktree add`
+# Create a copy-on-write worktree (use like `git worktree add`)
 cowtree add ../feature -b feature
 
-# For compacting existing worktrees
-cowtree compact feature/my-branch
-cowtree compact /path/to/detached-worktree --source main
+# Compact an existing worktree by branch name...
+cowtree compact my-feature-branch
+
+# ... or by worktree path
+cowtree compact ../path/to/some-worktree
+
+# Preview compaction
+cowtree compact feature/my-branch --dry-run
+
+# Compact every eligible worktree in the current repo
 cowtree compact --all
-cowtree compact --all --dry-run
 
-# Get the compaction status
-cowtree status
-cowtree status feature/my-branch
-cowtree status --all --json
+# Show compaction status
+cowtree status --all
 ```
 
-## Worktree creation
+Use `--json` with `compact` or `status` for machine-readable output.
 
-Replace `git worktree add` with `cowtree add`:
+## Creating worktrees
 
-```sh
-git worktree add ../feature -b feature
-# becomes
-cowtree add ../feature -b feature
-```
+Use `cowtree add` anywhere you would use `git worktree add`. Cowtree registers
+the worktree, clones verified files from existing worktrees on the same APFS
+volume, then lets Git materialize the rest.
 
-For `add`, cowtree asks Git to register the worktree without checking out files,
-clones verified regular files from registered worktrees on the same APFS volume,
-then lets Git materialize the remaining paths.
+Git options, paths, sparse checkouts, filters, and `post-checkout` hooks are
+preserved. If creation cannot finish safely, cowtree retains the worktree and
+prints recovery instructions.
 
-Run other Git worktree commands directly through `git worktree`.
+A nonempty checkout requires at least one eligible clone; cowtree does not fall
+back to an ordinary checkout.
 
-`cowtree add` accepts the options and paths supported by `git worktree add`,
-without shell expansion or UTF-8 conversion. Unknown creation options that
-cannot safely be interpreted will produce an error.
-
-**No ordinary-checkout fallback:** a nonempty checkout requires at least one
-verified clone on the destination APFS volume.
-
-The usual `post-checkout` hook still runs. If creation cannot finish safely,
-cowtree retains the incomplete worktree and prints recovery instructions rather
-than running destructive Git commands.
-
-## Compacting existing worktrees
-
-With `--all`, `cowtree` keeps track of which worktrees have been compacted and
-skips those whose receipts are still current.
-
-For `compact`, the source defaults to the checked-out branch
-named by `origin/HEAD` (the remote's default branch), then `main`, then
-`master`. It must be clean and its HEAD must equal the selected branch tip.
-Source and target must be on the same APFS volume.
-
-See [the benchmark guide](benchmarks/README.md) for reproducible large-checkout
-and receipt-skip timings.
+## Compacting worktrees
 
 > [!WARNING]
 >
@@ -81,14 +61,20 @@ and receipt-skip timings.
 > either worktree during compaction. Cowtree detects most concurrent changes and
 > skips affected files, but a small unavoidable race window remains.
 
-## Previewing compaction
+The source defaults to `origin/HEAD`, then `main`, then `master`. It must be
+clean, checked out, and on the same APFS volume as the target.
 
-`compact --dry-run` reports eligible files and attributed allocated bytes without
-replacing files. The attributed size is an upper bound; existing shared extents,
-snapshots, and APFS overhead can make actual savings differ. `du` does not report
-unique usage for shared blocks.
+`--all` skips worktrees with current compaction receipts. `--dry-run` reports
+eligible files and attributed storage without modifying anything.
+
+> [!NOTE]
+>
+> macOS reports each worktree as using its full size. Copy-on-write savings only
+> appear in aggregate disk usage and available space.
+
+See the [benchmark guide](benchmarks/README.md) for performance and storage
+measurements.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, contribution, and
-release documentation.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
