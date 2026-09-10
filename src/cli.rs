@@ -1,12 +1,13 @@
 use std::{
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
 use clap::{Args, Parser, Subcommand};
 
 use crate::{
-    compact,
+    add, compact,
     error::{Error, Result},
     git,
     output::{self, CompactResult, Envelope, StatusResult, Summary},
@@ -18,8 +19,7 @@ use crate::{
 #[command(
     name = "cowtree",
     version,
-    about = "Create and compact Git worktrees with copy-on-write clones",
-    after_help = "Git-compatible interface: cowtree git [<git-options>] worktree <command> [<args>]"
+    about = "Create and compact Git worktrees with copy-on-write clones"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -28,9 +28,19 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a copy-on-write worktree
+    Add(AddArgs),
     Compact(OperationArgs),
     Estimate(OperationArgs),
     Status(StatusArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true, trailing_var_arg = true)]
+struct AddArgs {
+    /// Arguments accepted by `git worktree add`
+    #[arg(value_name = "ARG", num_args = 0.., allow_hyphen_values = true)]
+    args: Vec<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -61,14 +71,20 @@ struct StatusArgs {
     json: bool,
 }
 
-pub fn run(cli: Cli) -> Result<()> {
+pub fn run(cli: Cli) -> Result<i32> {
+    let command = match cli.command {
+        Command::Add(args) => return add::run(args.args),
+        command => command,
+    };
     let cwd = env::current_dir()?;
     let worktrees = worktree::discover(&cwd)?;
-    match cli.command {
-        Command::Compact(args) => run_compact(&cwd, &worktrees, args),
-        Command::Estimate(args) => run_estimate(&cwd, &worktrees, args),
-        Command::Status(args) => run_status(&cwd, &worktrees, args),
-    }
+    match command {
+        Command::Compact(args) => run_compact(&cwd, &worktrees, args)?,
+        Command::Estimate(args) => run_estimate(&cwd, &worktrees, args)?,
+        Command::Status(args) => run_status(&cwd, &worktrees, args)?,
+        Command::Add(_) => unreachable!(),
+    };
+    Ok(0)
 }
 
 fn source_for(cwd: &Path, worktrees: &[Worktree], requested: Option<&PathBuf>) -> Result<Worktree> {

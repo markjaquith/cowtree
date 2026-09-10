@@ -64,9 +64,10 @@ def main():
             for method in order:
                 target = root / "trial"
                 started = time.perf_counter()
-                command = ["git", "worktree", "add", "--detach", str(target), "target"]
                 if method == "clone-first":
-                    command.insert(0, str(binary))
+                    command = [str(binary), "add", "--detach", str(target), "target"]
+                else:
+                    command = ["git", "worktree", "add", "--detach", str(target), "target"]
                 run(repo, *command)
                 if method == "native+compact":
                     run(repo, str(binary), "compact", str(target), "--source", "main", "--json")

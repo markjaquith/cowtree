@@ -1,7 +1,7 @@
 //! Register first, seed only proven checkout bytes, and let Git write the rest.
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{self, File},
     io::{Read, Write},
     os::unix::{
@@ -19,10 +19,10 @@ use std::{
 use sha2::Digest;
 
 use crate::{
+    add::{self, Add, Git},
     eligibility::validate_relative,
     error::{Error, Result},
     git::nul_paths,
-    git_worktree::{self, Add, Git},
     platform::{self, CloneOutcome, ClonePlatform, SystemPlatform},
     receipt, worktree,
 };
@@ -173,7 +173,7 @@ impl Creation<'_> {
 }
 
 pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
-    let cwd = effective_directory(&git.origin)?;
+    let cwd = std::env::current_dir()?.canonicalize()?;
     let path = if add.path.is_absolute() {
         add.path.clone()
     } else {
@@ -183,7 +183,7 @@ pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
         .ok()
         .filter(|meta| meta.is_dir())
         .map(|meta| meta.permissions());
-    let sources_raw = git_worktree::capture(
+    let sources_raw = add::capture(
         git.original()
             .args(["worktree", "list", "--porcelain", "-z"]),
         None,
@@ -213,10 +213,10 @@ pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
         let status = git
             .original()
             .args(["worktree", "add"])
-            .args(git_worktree::registration_args(args, add))
+            .args(add::registration_args(args, add))
             .status()?;
         if !status.success() {
-            return Ok(git_worktree::exit_code(status));
+            return Ok(add::exit_code(status));
         }
         let path = path.canonicalize()?;
         let admin = path_output(git.bytes(&path, &["rev-parse", "--absolute-git-dir"], None)?)?;
@@ -424,7 +424,7 @@ fn populate(
         std::io::stdout().write_all(&summary)?;
     }
     // Git's native add retains the completed worktree when a hook fails.
-    let code = git_worktree::post_checkout(git, &path, &commit)?;
+    let code = add::post_checkout(git, &path, &commit)?;
     let record = || -> Result<()> {
         // Hooks may rewrite clones or switch HEAD. Record only clones whose
         // identities survived the hook, never hook-generated copies.
@@ -453,34 +453,6 @@ fn populate(
         eprintln!("cowtree: worktree created, but could not record creation receipt: {error}");
     }
     Ok(code)
-}
-
-pub(crate) fn effective_directory(args: &[OsString]) -> Result<PathBuf> {
-    let mut cwd = std::env::current_dir()?;
-    let mut i = 0;
-    while i < args.len() {
-        let raw = args[i].as_bytes();
-        let directory = if raw == b"-C" {
-            i += 1;
-            args.get(i).map(OsString::as_os_str)
-        } else if raw.starts_with(b"-C") {
-            Some(OsStr::from_bytes(&raw[2..]))
-        } else {
-            None
-        };
-        if let Some(directory) = directory {
-            if !directory.is_empty() {
-                cwd.push(directory);
-            }
-        } else if matches!(
-            raw,
-            b"-c" | b"--git-dir" | b"--work-tree" | b"--namespace" | b"--config-env"
-        ) {
-            i += 1;
-        }
-        i += 1;
-    }
-    Ok(cwd.canonicalize()?)
 }
 
 fn path_output(mut bytes: Vec<u8>) -> Result<PathBuf> {
@@ -738,6 +710,7 @@ fn hash_blob<D: Digest>(file: &mut File, header: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn parallel_failure_joins_workers_and_records_all_owned_clones() {
@@ -780,10 +753,7 @@ mod tests {
             })
             .collect();
         fs::write(target.join("file-700"), "external").unwrap();
-        let git = Git {
-            origin: Vec::new(),
-            options: Vec::new(),
-        };
+        let git = Git;
         let mut creation = Creation {
             git: &git,
             path: target.clone(),

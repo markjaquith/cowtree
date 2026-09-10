@@ -12,7 +12,7 @@ python3 benchmarks/create.py target/release/cowtree --files 1000 --payload-bytes
 ```
 
 This separate benchmark compares native `git worktree add`, native add followed
-by compaction, and `cowtree git worktree add`. It uses disposable native Git
+by compaction, and `cowtree add`. It uses disposable native Git
 fixtures, isolated Git configuration, a clean same-volume donor, and a fresh
 destination for every trial. All creation, inventory, payload verification,
 cloning, checkout, final index validation, and receipt work is timed. The script

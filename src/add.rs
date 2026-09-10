@@ -1,4 +1,4 @@
-//! The wrapper boundary preserves native argv and delegates registration to Git.
+//! Parse `cowtree add` arguments and delegate worktree registration to Git.
 use std::{
     ffi::{CString, OsString},
     io::Write,
@@ -30,18 +30,11 @@ pub struct Add {
     pub end_of_options: Option<usize>,
 }
 
-/// `origin` is used only for registration. Internal commands use absolute
-/// worktree paths and carry config/namespace options, not repository selectors.
-pub struct Git {
-    pub origin: Vec<OsString>,
-    pub options: Vec<OsString>,
-}
+pub struct Git;
 
 impl Git {
     pub fn original(&self) -> Command {
-        let mut command = Command::new("git");
-        command.args(&self.origin);
-        command
+        Command::new("git")
     }
 
     pub fn at(&self, path: &Path) -> Command {
@@ -56,7 +49,7 @@ impl Git {
         ] {
             command.env_remove(key);
         }
-        command.arg("-C").arg(path).args(&self.options);
+        command.arg("-C").arg(path);
         // Match native add's explicit child checkout context. In particular,
         // shared or command-line core.worktree must not redirect index writes.
         command
@@ -103,7 +96,7 @@ pub fn post_checkout(git: &Git, target: &Path, commit: &str) -> Result<i32> {
                 }
                 PathBuf::from(OsString::from_vec(bytes))
             } else {
-                create::effective_directory(&git.origin)?
+                std::env::current_dir()?
             };
             directory = base.join(directory);
         }
@@ -173,82 +166,7 @@ pub fn post_checkout(git: &Git, target: &Path, commit: &str) -> Result<i32> {
     Ok(exit_code(status))
 }
 
-/// Git exports these global switches to commands launched by hooks as well.
-/// Keep parsing and hook inheritance driven by the same mapping.
-fn inherited_env(option: &[u8]) -> Option<(&'static str, &'static str)> {
-    Some(match option {
-        b"--literal-pathspecs" => ("GIT_LITERAL_PATHSPECS", "1"),
-        b"--glob-pathspecs" => ("GIT_GLOB_PATHSPECS", "1"),
-        b"--noglob-pathspecs" => ("GIT_NOGLOB_PATHSPECS", "1"),
-        b"--icase-pathspecs" => ("GIT_ICASE_PATHSPECS", "1"),
-        b"--no-optional-locks" => ("GIT_OPTIONAL_LOCKS", "0"),
-        b"--no-replace-objects" => ("GIT_NO_REPLACE_OBJECTS", "1"),
-        b"--no-lazy-fetch" => ("GIT_NO_LAZY_FETCH", "1"),
-        b"--no-advice" => ("GIT_ADVICE", "0"),
-        _ => return None,
-    })
-}
-
 fn hook_environment(git: &Git, command: &mut Command) -> Result<()> {
-    let mut parameters = std::env::var_os("GIT_CONFIG_PARAMETERS")
-        .unwrap_or_default()
-        .as_bytes()
-        .to_vec();
-    let mut i = 0;
-    while let Some(arg) = git.options.get(i) {
-        let raw = arg.as_bytes();
-        let mut append = |parameter: &[u8]| {
-            if !parameters.is_empty() {
-                parameters.push(b' ');
-            }
-            parameters.push(b'\'');
-            for byte in parameter {
-                if *byte == b'\'' {
-                    parameters.extend_from_slice(b"'\\''");
-                } else {
-                    parameters.push(*byte);
-                }
-            }
-            parameters.push(b'\'');
-        };
-        if raw == b"-c" {
-            i += 1;
-            append(git.options[i].as_bytes());
-        } else if raw.starts_with(b"-c") && !raw.starts_with(b"--") {
-            append(&raw[2..]);
-        } else if raw == b"--config-env" || raw.starts_with(b"--config-env=") {
-            let value = if raw == b"--config-env" {
-                i += 1;
-                git.options[i].as_bytes()
-            } else {
-                &raw[13..]
-            };
-            let equal = value
-                .iter()
-                .position(|b| *b == b'=')
-                .ok_or_else(|| Error::Message("invalid --config-env".into()))?;
-            let value_from = std::ffi::OsStr::from_bytes(&value[equal + 1..]);
-            let environment = std::env::var_os(value_from).ok_or_else(|| {
-                Error::Message("missing --config-env environment variable".into())
-            })?;
-            let mut config = value[..=equal].to_vec();
-            config.extend_from_slice(environment.as_bytes());
-            append(&config);
-        } else if raw == b"--namespace" {
-            i += 1;
-            command.env("GIT_NAMESPACE", &git.options[i]);
-        } else if let Some(value) = raw.strip_prefix(b"--namespace=") {
-            command.env("GIT_NAMESPACE", std::ffi::OsStr::from_bytes(value));
-        } else if let Some(value) = raw.strip_prefix(b"--exec-path=") {
-            command.env("GIT_EXEC_PATH", std::ffi::OsStr::from_bytes(value));
-        } else if let Some((key, value)) = inherited_env(raw) {
-            command.env(key, value);
-        }
-        i += 1;
-    }
-    if !parameters.is_empty() {
-        command.env("GIT_CONFIG_PARAMETERS", OsString::from_vec(parameters));
-    }
     let mut prefix = capture(git.original().args(["rev-parse", "--show-prefix"]), None)?;
     if prefix.last() == Some(&b'\n') {
         prefix.pop();
@@ -299,29 +217,22 @@ pub fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
 }
 
-fn passthrough(args: &[OsString]) -> Result<i32> {
-    Err(Command::new("git").args(args).exec().into())
+fn native_add(args: &[OsString]) -> Result<i32> {
+    Err(Command::new("git")
+        .args(["worktree", "add"])
+        .args(args)
+        .exec()
+        .into())
 }
 
 pub fn run(args: Vec<OsString>) -> Result<i32> {
-    let Some((index, options)) = globals(&args)? else {
-        return passthrough(&args);
-    };
-    if args.get(index).is_none_or(|a| a != "worktree")
-        || args.get(index + 1).is_none_or(|a| a != "add")
-    {
-        return passthrough(&args);
-    }
-    let Some(add) = parse_add(&args[index + 2..])? else {
-        return passthrough(&args);
+    let Some(add) = parse_add(&args)? else {
+        return native_add(&args);
     };
     if !add.checkout || add.orphan {
-        return passthrough(&args);
+        return native_add(&args);
     }
-    let git = Git {
-        origin: args[..index].to_vec(),
-        options,
-    };
+    let git = Git;
     // Git infers an unborn branch when no refs exist. Let Git handle that case,
     // including its remote/force checks, without injecting --no-checkout.
     if !add.explicit_target && !add.detach {
@@ -337,74 +248,10 @@ pub fn run(args: Vec<OsString>) -> Result<i32> {
             .stderr(Stdio::null())
             .status()?;
         if refs.is_empty() && !head.success() {
-            return passthrough(&args);
+            return native_add(&args);
         }
     }
-    create::run(&git, &args[index + 2..], &add)
-}
-
-/// Return the command position and global arguments safe to carry to children.
-fn globals(args: &[OsString]) -> Result<Option<(usize, Vec<OsString>)>> {
-    let mut i = 0;
-    let mut options = Vec::new();
-    while let Some(arg) = args.get(i) {
-        let bytes = arg.as_bytes();
-        if !bytes.starts_with(b"-") {
-            return Ok(Some((i, options)));
-        }
-        if matches!(
-            bytes,
-            b"--help"
-                | b"-h"
-                | b"--version"
-                | b"-v"
-                | b"--exec-path"
-                | b"--html-path"
-                | b"--man-path"
-                | b"--info-path"
-        ) {
-            return Ok(None);
-        }
-        let pair = matches!(
-            bytes,
-            b"-C" | b"-c" | b"--git-dir" | b"--work-tree" | b"--namespace" | b"--config-env"
-        );
-        let keep = matches!(bytes, b"-c" | b"--namespace" | b"--config-env")
-            || bytes.starts_with(b"--namespace=")
-            || bytes.starts_with(b"--config-env=")
-            || (bytes.starts_with(b"-c") && bytes.len() > 2)
-            || inherited_env(bytes).is_some();
-        if keep {
-            options.push(arg.clone());
-        }
-        if pair {
-            i += 1;
-            let Some(value) = args.get(i) else {
-                return Ok(None);
-            };
-            if keep {
-                options.push(value.clone());
-            }
-        } else if !keep
-            && !matches!(
-                bytes,
-                b"--bare" | b"--no-pager" | b"-P" | b"--paginate" | b"-p"
-            )
-            && !bytes.starts_with(b"--git-dir=")
-            && !bytes.starts_with(b"--work-tree=")
-            && !bytes.starts_with(b"--exec-path=")
-            && !(bytes.starts_with(b"-C") && bytes.len() > 2)
-        {
-            return Err(Error::Message(format!(
-                "unsupported Git global option: {}; cannot safely locate the worktree command",
-                arg.to_string_lossy()
-            )));
-        } else if bytes.starts_with(b"--exec-path=") {
-            options.push(arg.clone());
-        }
-        i += 1;
-    }
-    Ok(None)
+    create::run(&git, &args, &add)
 }
 
 fn parse_add(args: &[OsString]) -> Result<Option<Add>> {
@@ -580,11 +427,6 @@ mod tests {
     }
     #[test]
     fn operands_are_not_options_or_commands() {
-        let argv = args(&["-C", "worktree", "-c", "x=add", "worktree", "add"]);
-        assert_eq!(
-            globals(&argv).unwrap().unwrap(),
-            (4, args(&["-c", "x=add"]))
-        );
         let add = parse_add(&args(&["--reason", "--", "--lock", "--", "-target"]))
             .unwrap()
             .unwrap();

@@ -10,10 +10,8 @@ This can reduce the space that a worktree takes up on your disk by up to 95%.
 ## Usage
 
 ```sh
-cowtree git worktree add ../feature -b feature
-cowtree git worktree add --detach ../review HEAD~3
-cowtree git -C /path/to/repo -c core.autocrlf=false worktree add ../feature
-cowtree git worktree list --porcelain -z
+cowtree add ../feature -b feature
+cowtree add --detach ../review HEAD~3
 
 cowtree compact feature/my-branch
 cowtree compact /path/to/detached-worktree --source main
@@ -30,24 +28,22 @@ cowtree status --all --json
 
 ## Clone-first creation
 
-Prefix a Git worktree command with `cowtree`:
+Replace `git worktree add` with `cowtree add`:
 
 ```sh
 git worktree add ../feature -b feature
 # becomes
-cowtree git worktree add ../feature -b feature
+cowtree add ../feature -b feature
 ```
 
 For `add`, cowtree asks Git to register the worktree without checking out files,
 clones verified regular files from registered worktrees on the same APFS volume,
 then lets Git materialize the remaining paths.
 
-All other commands (`list`, `move`, `remove`, `lock`, `unlock`, `prune`, `repair`,
-and help) run directly through Git with its output and exit status. Git global
-options such as repeated `-C`, `-c`, `--config-env`, and repository selectors are
-supported. Arguments and paths are passed without shell expansion or UTF-8
-conversion. Unknown creation options that cannot safely be interpreted produce
-an explicit error rather than an ordinary checkout.
+Run other worktree commands directly through Git. `cowtree add` accepts the
+options and paths supported by `git worktree add`, without shell expansion or
+UTF-8 conversion. Unknown creation options that cannot safely be interpreted
+produce an explicit error rather than an ordinary checkout.
 
 Git handles branch naming, refs, tracking, force checks, and registration.
 Cowtree supports detached donors and independently verified clean files in dirty

@@ -40,7 +40,7 @@ impl Fixture {
     }
     fn add(&self, name: &str, args: &[&str]) -> Output {
         command(&self.repo, env!("CARGO_BIN_EXE_cowtree"))
-            .args(["git", "worktree", "add"])
+            .arg("add")
             .args(args)
             .arg(self.target(name))
             .output()
@@ -91,30 +91,14 @@ fn apfs(path: &Path) -> bool {
 }
 
 #[test]
-fn passthrough_is_byte_exact_and_works_outside_a_repository() {
+fn add_is_a_top_level_command_and_git_is_not_shadowed() {
     let f = Fixture::new();
-    for args in [
-        vec!["worktree", "list", "--porcelain", "-z"],
-        vec!["worktree", "list", "--bad-option"],
-        vec!["worktree", "add", "-h"],
-        vec!["--version"],
-    ] {
-        let native = command(&f.repo, "git").args(&args).output().unwrap();
-        let wrapped = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
-            .arg("git")
-            .args(&args)
-            .output()
-            .unwrap();
-        assert_eq!(native.status.code(), wrapped.status.code());
-        assert_eq!(native.stdout, wrapped.stdout);
-        assert_eq!(native.stderr, wrapped.stderr);
-    }
-    success(
-        &command(f._root.path(), env!("CARGO_BIN_EXE_cowtree"))
-            .args(["git", "--version"])
-            .output()
-            .unwrap(),
-    );
+    let help = f.cow(&["--help"]);
+    success(&help);
+    assert!(String::from_utf8_lossy(&help.stdout).contains("add"));
+    let legacy = f.cow(&["git", "worktree", "list"]);
+    assert!(!legacy.status.success());
+    assert!(String::from_utf8_lossy(&legacy.stderr).contains("unrecognized subcommand 'git'"));
 }
 
 #[test]
@@ -172,7 +156,7 @@ fn divergent_commit_dirty_source_modes_symlinks_and_weird_names() {
     git(&f.repo, &["update-index", "--assume-unchanged", "exec"]);
     fs::write(f.repo.join("exec"), "dirty hidden bytes\n").unwrap();
     let output = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add", "--detach"])
+        .args(["add", "--detach"])
         .arg(f.target("old"))
         .arg("old")
         .output()
@@ -310,23 +294,15 @@ fn no_eligible_source_fails_without_checkout_and_preserves_empty_directory() {
 }
 
 #[test]
-fn global_context_nonutf8_destination_quiet_and_lock() {
+fn nonutf8_destination_quiet_and_lock() {
     let f = Fixture::new();
     if !apfs(&f.repo) {
         return;
     }
     fs::create_dir(f.repo.join("subdir")).unwrap();
     let target_name = unusual_name("destination-☃", b"destination-\xff");
-    let output = command(f._root.path(), env!("CARGO_BIN_EXE_cowtree"))
+    let output = command(&f.repo.join("subdir"), env!("CARGO_BIN_EXE_cowtree"))
         .args([
-            OsStr::new("git"),
-            OsStr::new("-C"),
-            f.repo.as_os_str(),
-            OsStr::new("-C"),
-            OsStr::new("subdir"),
-            OsStr::new("-c"),
-            OsStr::new("core.hooksPath=/dev/null"),
-            OsStr::new("worktree"),
             OsStr::new("add"),
             OsStr::new("-q"),
             OsStr::new("--lock"),
@@ -358,7 +334,7 @@ fn unusual_name(unicode: &str, bytes: &[u8]) -> OsString {
 }
 
 #[test]
-fn tracking_force_reset_and_passthrough_lifecycle() {
+fn tracking_force_and_reset_options_match_git() {
     let f = Fixture::new();
     if !apfs(&f.repo) {
         return;
@@ -383,7 +359,7 @@ fn tracking_force_reset_and_passthrough_lifecycle() {
     );
     // Git resolves the remote and creates the local tracking branch.
     let output = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add"])
+        .arg("add")
         .arg(f.target("tracked"))
         .arg("remote-feature")
         .output()
@@ -393,40 +369,10 @@ fn tracking_force_reset_and_passthrough_lifecycle() {
         git(&f.repo, &["config", "branch.remote-feature.remote"]),
         b"origin\n"
     );
-    success(&f.cow(&[
-        "git",
-        "worktree",
-        "move",
-        f.target("tracked").to_str().unwrap(),
-        f.target("moved").to_str().unwrap(),
-    ]));
-    success(&f.cow(&[
-        "git",
-        "worktree",
-        "lock",
-        "--reason",
-        "lock",
-        f.target("moved").to_str().unwrap(),
-    ]));
-    success(&f.cow(&[
-        "git",
-        "worktree",
-        "unlock",
-        f.target("moved").to_str().unwrap(),
-    ]));
-    success(&f.cow(&[
-        "git",
-        "worktree",
-        "repair",
-        f.target("moved").to_str().unwrap(),
-    ]));
-    success(&f.cow(&[
-        "git",
-        "worktree",
-        "remove",
-        f.target("moved").to_str().unwrap(),
-    ]));
-    success(&f.cow(&["git", "worktree", "prune", "--dry-run"]));
+    git(
+        &f.repo,
+        &["worktree", "remove", f.target("tracked").to_str().unwrap()],
+    );
     // Abbreviated options and short option clusters must survive interception.
     success(&f.add("reset", &["--det", "--qui"]));
     success(&f.add("cluster", &["-qbcluster"]));
@@ -455,6 +401,7 @@ fn checkout_representation_and_umask_match_native_git() {
     fs::set_permissions(f.repo.join("exec"), fs::Permissions::from_mode(0o755)).unwrap();
     git(&f.repo, &["add", "."]);
     git(&f.repo, &["commit", "-qm", "representations"]);
+    git(&f.repo, &["config", "core.autocrlf", "true"]);
     for cow in [false, true] {
         let mut cmd = command(
             &f.repo,
@@ -465,7 +412,9 @@ fn checkout_representation_and_umask_match_native_git() {
             },
         );
         if cow {
-            cmd.arg("git");
+            cmd.arg("add");
+        } else {
+            cmd.args(["worktree", "add"]);
         }
         unsafe {
             cmd.pre_exec(|| {
@@ -474,7 +423,7 @@ fn checkout_representation_and_umask_match_native_git() {
             });
         }
         let output = cmd
-            .args(["-c", "core.autocrlf=true", "worktree", "add", "--detach"])
+            .arg("--detach")
             .arg(f.target(if cow { "cow" } else { "native" }))
             .output()
             .unwrap();
@@ -562,7 +511,7 @@ fn bare_repository_uses_detached_linked_source_and_sha256() {
     git(&sha, &["add", "."]);
     git(&sha, &["commit", "-qm", "sha"]);
     let output = command(&sha, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add", "--detach"])
+        .args(["add", "--detach"])
         .arg(f.target("sha-linked"))
         .output()
         .unwrap();
@@ -585,7 +534,7 @@ fn bare_repository_uses_detached_linked_source_and_sha256() {
             .unwrap(),
     );
     let output = command(&bare, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add", "--detach"])
+        .args(["add", "--detach"])
         .arg(f.target("bare-target"))
         .output()
         .unwrap();
@@ -600,7 +549,7 @@ fn empty_commit_and_implicit_orphan_need_no_donor() {
     fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "--initial-branch=main"]);
     let output = command(&repo, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add"])
+        .arg("add")
         .arg(f.target("implicit"))
         .output()
         .unwrap();
@@ -610,7 +559,7 @@ fn empty_commit_and_implicit_orphan_need_no_donor() {
     git(&repo, &["config", "user.email", "test@example.com"]);
     git(&repo, &["commit", "--allow-empty", "-qm", "empty"]);
     let output = command(&repo, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add", "--detach"])
+        .args(["add", "--detach"])
         .arg(f.target("empty-commit"))
         .output()
         .unwrap();
@@ -636,7 +585,7 @@ fn interruption_during_filter_returns_signal_status_and_retains_recovery() {
         ],
     );
     let child = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
-        .args(["git", "worktree", "add", "-b", "interrupted"])
+        .args(["add", "-b", "interrupted"])
         .arg(f.target("interrupted"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -704,7 +653,7 @@ fn git_environment_selectors_do_not_modify_the_caller_index() {
         .env("GIT_DIR", f.repo.join(".git"))
         .env("GIT_WORK_TREE", &f.repo)
         .env("GIT_INDEX_FILE", f.repo.join(".git/index"))
-        .args(["git", "worktree", "add", "-b", "env"])
+        .args(["add", "-b", "env"])
         .arg(f.target("env"))
         .output()
         .unwrap();
@@ -739,7 +688,7 @@ fn user_extended_attributes_are_not_copied() {
 }
 
 #[test]
-fn relative_hooks_and_global_checkout_overrides_match_native() {
+fn relative_hooks_match_native() {
     let f = Fixture::new();
     if !apfs(&f.repo) {
         return;
@@ -751,6 +700,9 @@ fn relative_hooks_and_global_checkout_overrides_match_native() {
     // Deliberately no shebang: Git supports executable shell scripts too.
     fs::write(&hook, "printf '%s\\n' \"${GIT_DIR-unset}\" \"${GIT_WORK_TREE-unset}\" \"${GIT_PREFIX-unset}\" > hook-env\ngit config --get cowtree.test >> hook-env\ngit config --get cowtree.env >> hook-env\necho hook-output\n").unwrap();
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&f.repo, &["config", "core.hooksPath", "custom-hooks"]);
+    git(&f.repo, &["config", "cowtree.test", "quoted ' value"]);
+    git(&f.repo, &["config", "cowtree.env", "environment value"]);
     let mut outputs = Vec::new();
     for cow in [false, true] {
         let mut cmd = command(
@@ -762,20 +714,12 @@ fn relative_hooks_and_global_checkout_overrides_match_native() {
             },
         );
         if cow {
-            cmd.arg("git");
+            cmd.arg("add");
+        } else {
+            cmd.args(["worktree", "add"]);
         }
         let output = cmd
-            .env("COWTREE_TEST_VALUE", "environment value")
-            .args([
-                "-c",
-                "core.hooksPath=custom-hooks",
-                "-c",
-                "cowtree.test=quoted ' value",
-                "--config-env=cowtree.env=COWTREE_TEST_VALUE",
-                "-c",
-            ])
-            .arg(format!("core.worktree={}", f.repo.display()))
-            .args(["worktree", "add", "--detach"])
+            .arg("--detach")
             .arg(f.target(if cow { "cow-hook" } else { "native-hook" }))
             .output()
             .unwrap();
@@ -827,7 +771,9 @@ fn file_directory_transitions_and_gitlinks_match_native_checkout() {
             },
         );
         if cow {
-            cmd.arg("git");
+            cmd.arg("add");
+        } else {
+            cmd.args(["worktree", "add"]);
         }
         let target = f.target(if cow {
             "cow-transition"
@@ -835,7 +781,7 @@ fn file_directory_transitions_and_gitlinks_match_native_checkout() {
             "native-transition"
         });
         success(
-            &cmd.args(["worktree", "add", "--detach"])
+            &cmd.arg("--detach")
                 .arg(&target)
                 .arg("with-directory")
                 .output()
@@ -859,12 +805,10 @@ fn creation_receipt_survives_donor_removal_and_becomes_stale_on_commit_change() 
     fs::write(f.repo.join("same"), "dirty").unwrap();
     fs::write(f.repo.join("changed"), "dirty").unwrap();
     success(&f.add("receipt", &["-b", "receipt"]));
-    success(&f.cow(&[
-        "git",
-        "worktree",
-        "remove",
-        f.target("donor").to_str().unwrap(),
-    ]));
+    git(
+        &f.repo,
+        &["worktree", "remove", f.target("donor").to_str().unwrap()],
+    );
     git(&f.repo, &["branch", "-D", "donor"]);
     let target = f.target("receipt");
     let status = f.cow(&["status", target.to_str().unwrap(), "--json"]);
@@ -908,69 +852,18 @@ fn empty_attribute_values_match_native_checkout() {
             },
         );
         if cow {
-            cmd.arg("git");
+            cmd.arg("add");
+        } else {
+            cmd.args(["worktree", "add"]);
         }
         let target = f.target(if cow {
             "cow-attribute"
         } else {
             "native-attribute"
         });
-        success(
-            &cmd.args(["worktree", "add", "--detach"])
-                .arg(&target)
-                .output()
-                .unwrap(),
-        );
+        success(&cmd.arg("--detach").arg(&target).output().unwrap());
         assert!(git(&target, &["status", "--porcelain"]).is_empty());
         assert_eq!(fs::read(target.join("changed")).unwrap(), b"before\n");
-    }
-}
-
-#[test]
-fn global_pathspec_options_reach_checkout_hooks() {
-    let f = Fixture::new();
-    if !apfs(&f.repo) {
-        return;
-    }
-    fs::write(f.repo.join("glob*.txt"), "literal filename").unwrap();
-    fs::write(f.repo.join("glob-other.txt"), "wildcard match").unwrap();
-    git(&f.repo, &["add", "."]);
-    git(&f.repo, &["commit", "-qm", "pathspec fixture"]);
-    let hook = f.repo.join(".git/hooks/post-checkout");
-    fs::write(&hook, "#!/bin/sh\nprintf '%s:%s:%s:%s\\n' \"$GIT_LITERAL_PATHSPECS\" \"$GIT_GLOB_PATHSPECS\" \"$GIT_NOGLOB_PATHSPECS\" \"$GIT_ICASE_PATHSPECS\" > hook-result\ngit ls-files -- 'glob*.txt' >> hook-result\n").unwrap();
-    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
-    for (n, option) in [
-        "--literal-pathspecs",
-        "--glob-pathspecs",
-        "--noglob-pathspecs",
-        "--icase-pathspecs",
-    ]
-    .iter()
-    .enumerate()
-    {
-        let mut results = Vec::new();
-        for cow in [false, true] {
-            let mut cmd = command(
-                &f.repo,
-                if cow {
-                    env!("CARGO_BIN_EXE_cowtree")
-                } else {
-                    "git"
-                },
-            );
-            if cow {
-                cmd.arg("git");
-            }
-            let target = f.target(&format!("pathspec-{n}-{cow}"));
-            success(
-                &cmd.args([option, "worktree", "add", "--detach"])
-                    .arg(&target)
-                    .output()
-                    .unwrap(),
-            );
-            results.push(fs::read(target.join("hook-result")).unwrap());
-        }
-        assert_eq!(results[0], results[1], "{option}");
     }
 }
 
