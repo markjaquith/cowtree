@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::{Args, Parser, Subcommand};
+use usage::{Args, Cli as UsageCli, Subcommands};
 
 use crate::{
     add, compact,
@@ -15,18 +15,20 @@ use crate::{
     worktree::{self, Worktree},
 };
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "cowtree",
+#[derive(Debug, UsageCli)]
+#[usage(
+    bin = "cowtree",
     version,
-    about = "Create and compact Git worktrees with copy-on-write clones"
+    about = "Create and compact Git worktrees with copy-on-write clones",
+    unknown_flags = "error",
+    args_override_self = false
 )]
 pub struct Cli {
-    #[command(subcommand)]
+    #[usage(subcommand)]
     command: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 enum Command {
     /// Create a copy-on-write worktree
     Add(AddArgs),
@@ -35,38 +37,40 @@ enum Command {
 }
 
 #[derive(Debug, Args)]
-#[command(disable_help_flag = true, trailing_var_arg = true)]
+#[usage(disable_help_flag = true, unknown_flags = "value")]
 struct AddArgs {
     /// Arguments accepted by `git worktree add`
-    #[arg(value_name = "ARG", num_args = 0.., allow_hyphen_values = true)]
+    #[usage(name = "ARG", double_dash = "preserve")]
     args: Vec<OsString>,
 }
 
 #[derive(Debug, Args)]
+#[usage(args_override_self = false)]
 struct OperationArgs {
     /// Branch or registered worktree path
     target: Option<PathBuf>,
     /// Process every linked worktree except the source
-    #[arg(long, conflicts_with = "target")]
+    #[usage(long, conflicts("target"))]
     all: bool,
     /// Checked-out source branch or worktree path
-    #[arg(long)]
+    #[usage(long)]
     source: Option<PathBuf>,
     /// Emit stable, versioned JSON
-    #[arg(long)]
+    #[usage(long)]
     json: bool,
     /// Calculate candidates without cloning (compact only)
-    #[arg(long)]
+    #[usage(long)]
     dry_run: bool,
 }
 
 #[derive(Debug, Args)]
+#[usage(args_override_self = false)]
 struct StatusArgs {
     /// Branch or registered worktree path (defaults to the current worktree)
     target: Option<PathBuf>,
-    #[arg(long, conflicts_with = "target")]
+    #[usage(long, conflicts("target"))]
     all: bool,
-    #[arg(long)]
+    #[usage(long)]
     json: bool,
 }
 

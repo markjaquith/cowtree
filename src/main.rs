@@ -10,8 +10,6 @@ mod platform;
 mod receipt;
 mod worktree;
 
-use clap::Parser;
-
 fn main() {
     match cli::run(cli::Cli::parse()) {
         Ok(code) => std::process::exit(code),
