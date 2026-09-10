@@ -35,9 +35,12 @@ def benchmark(args, root):
     ]:
         run(repo, "git", "config", key, value)
     for index in range(args.files):
-        path = repo / f"dir-{index // 100:05}" / f"file-{index:06}.txt"
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(f"file {index}\n" + "x" * 4096)
+        parent = repo / f"dir-{index // 100:05}"
+        for level in range(args.depth - 1):
+            parent /= f"level-{level}"
+        path = parent / f"file-{index:06}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"file {index}\n" + "x" * args.payload_bytes)
     run(repo, "git", "add", ".")
     run(repo, "git", "commit", "-m", "benchmark fixture")
     for index in range(args.worktrees):
@@ -78,7 +81,8 @@ def benchmark(args, root):
                     raise RuntimeError(f"Unexpected clone counts: {result}")
             print(json.dumps({
                 "binary": str(binary), "trial": trial, "files": args.files,
-                "worktrees": args.worktrees, **timings,
+                "worktrees": args.worktrees, "depth": args.depth,
+                "payload_bytes": args.payload_bytes, **timings,
             }), flush=True)
 
 
@@ -88,6 +92,8 @@ def main():
     parser.add_argument("--files", type=positive_int, default=20000)
     parser.add_argument("--worktrees", type=positive_int, default=3)
     parser.add_argument("--rounds", type=positive_int, default=3)
+    parser.add_argument("--depth", type=positive_int, default=1)
+    parser.add_argument("--payload-bytes", type=positive_int, default=4096)
     parser.add_argument("--temp-dir", type=Path, help="parent directory on an APFS volume")
     args = parser.parse_args()
     if sys.platform != "darwin":
