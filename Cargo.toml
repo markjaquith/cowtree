@@ -1,6 +1,6 @@
 [package]
 name = "cowtree"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Create and compact Git worktrees with copy-on-write filesystem clones"
 license = "MIT"
