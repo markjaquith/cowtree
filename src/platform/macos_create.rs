@@ -33,8 +33,9 @@ fn name(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::UnsafePath(path.to_owned()))
 }
 
-/// Walk each component relative to an open directory, never following a link.
-fn parent(root: &Path, relative: &Path, create: bool) -> Result<File> {
+/// Walk existing parents without following links. Creation owns directory setup;
+/// workers must not recreate a parent that disappeared after that setup.
+fn parent(root: &Path, relative: &Path) -> Result<File> {
     let mut directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -44,12 +45,6 @@ fn parent(root: &Path, relative: &Path, create: bool) -> Result<File> {
             continue;
         }
         let part = name(Path::new(component.as_os_str()))?;
-        if create && unsafe { libc::mkdirat(directory.as_raw_fd(), part.as_ptr(), 0o777) } != 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::AlreadyExists {
-                return Err(error.into());
-            }
-        }
         let fd = unsafe {
             libc::openat(
                 directory.as_raw_fd(),
@@ -85,7 +80,7 @@ pub fn clone_new(
     verify: impl FnOnce(&mut File) -> Result<bool>,
 ) -> Result<CloneOutcome> {
     validate_relative(relative)?;
-    let source_parent = match parent(source, relative, false) {
+    let source_parent = match parent(source, relative) {
         Ok(parent) => parent,
         Err(_) => return Ok(CloneOutcome::NotRegular),
     };
@@ -117,7 +112,7 @@ pub fn clone_new(
     if identity(&before) != identity(&file.metadata()?) {
         return Ok(CloneOutcome::ChangedDuringClone);
     }
-    let destination = parent(target, relative, true)?;
+    let destination = parent(target, relative)?;
     // CLONE_NOOWNERCOPY; without CLONE_ACL the destination inherits its own
     // directory's ACL, just as open(O_CREAT) would.
     if unsafe { fclonefileat(fd, destination.as_raw_fd(), basename.as_ptr(), 2) } != 0 {
@@ -244,5 +239,24 @@ mod tests {
         std::os::unix::fs::symlink(&outside, target.join("dir")).unwrap();
         assert!(clone_new(&source, &target, Path::new("dir/file"), 0o644, |_| Ok(true)).is_err());
         assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn removed_destination_parent_is_not_recreated_by_a_worker() {
+        let root = tempfile::tempdir().unwrap();
+        if SystemPlatform.validate(root.path(), root.path()).is_err() {
+            return;
+        }
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir_all(source.join("dir")).unwrap();
+        fs::create_dir_all(target.join("dir")).unwrap();
+        fs::write(source.join("dir/file"), "data").unwrap();
+        let result = clone_new(&source, &target, Path::new("dir/file"), 0o644, |_| {
+            fs::remove_dir(target.join("dir"))?;
+            Ok(true)
+        });
+        assert!(result.is_err());
+        assert!(!target.join("dir").exists());
     }
 }
