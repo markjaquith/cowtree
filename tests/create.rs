@@ -888,3 +888,40 @@ fn non_apfs_creation_fails_without_payload_fallback() {
     assert!(!f.target("unsupported").exists());
     assert!(!f.repo.join(".git/worktrees/unsupported").exists());
 }
+
+#[test]
+fn empty_attribute_values_match_native_checkout() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    fs::write(f.repo.join(".gitattributes"), "changed filter=\n").unwrap();
+    git(&f.repo, &["add", ".gitattributes"]);
+    git(&f.repo, &["commit", "-qm", "empty attribute"]);
+    for cow in [false, true] {
+        let mut cmd = command(
+            &f.repo,
+            if cow {
+                env!("CARGO_BIN_EXE_cowtree")
+            } else {
+                "git"
+            },
+        );
+        if cow {
+            cmd.arg("git");
+        }
+        let target = f.target(if cow {
+            "cow-attribute"
+        } else {
+            "native-attribute"
+        });
+        success(
+            &cmd.args(["worktree", "add", "--detach"])
+                .arg(&target)
+                .output()
+                .unwrap(),
+        );
+        assert!(git(&target, &["status", "--porcelain"]).is_empty());
+        assert_eq!(fs::read(target.join("changed")).unwrap(), b"before\n");
+    }
+}

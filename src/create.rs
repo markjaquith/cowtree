@@ -574,7 +574,14 @@ fn checkout_safe(git: &Git, path: &Path, entries: &[&Entry]) -> Result<HashSet<P
         .filter(|entry| entry.regular)
         .map(|entry| entry.path.clone())
         .collect();
-    let fields: Vec<_> = nul_paths(&output).collect();
+    // Attribute values can legitimately be empty (for example, `filter=`).
+    // A path-list parser discards them and misaligns the remaining records.
+    let mut fields: Vec<_> = output.split(|byte| *byte == 0).collect();
+    if fields.pop() != Some(&[]) || fields.len() != entries.len() * 15 {
+        return Err(Error::Message(
+            "malformed checkout attribute inventory".into(),
+        ));
+    }
     for record in fields.as_chunks::<15>().0 {
         let relative = PathBuf::from(OsString::from_vec(record[0].to_vec()));
         let mut text_unset = false;
@@ -589,11 +596,6 @@ fn checkout_safe(git: &Git, path: &Path, entries: &[&Entry]) -> Result<HashSet<P
         if converts && !text_unset {
             safe.remove(&relative);
         }
-    }
-    if fields.len() != entries.len() * 15 {
-        return Err(Error::Message(
-            "malformed checkout attribute inventory".into(),
-        ));
     }
     Ok(safe)
 }
