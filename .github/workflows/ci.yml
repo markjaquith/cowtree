@@ -5,6 +5,13 @@ on:
   pull_request:
 
 jobs:
+  markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - run: mise exec -- hk check --all --step prettier
+
   test:
     strategy:
       matrix:

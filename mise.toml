@@ -1,0 +1,4 @@
+[tools]
+hk = "1.57.0"
+node = "24"
+"npm:prettier" = "3.9.6"

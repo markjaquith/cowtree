@@ -1,4 +1,11 @@
 amends "package://github.com/jdx/hk/releases/download/v1.57.0/hk@1.57.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.57.0/hk@1.57.0#/Builtins.pkl"
+
+local markdown = new Mapping<String, Step> {
+    ["prettier"] = (Builtins.prettier) {
+        glob = "**/*.md"
+    }
+}
 
 hooks {
     ["pre-commit"] {
@@ -6,6 +13,12 @@ hooks {
             ["cargo-fmt"] {
                 check = "cargo fmt --check"
             }
+            ...markdown
         }
+    }
+    ["check"] { steps = markdown }
+    ["fix"] {
+        fix = true
+        steps = markdown
     }
 }

@@ -2,15 +2,20 @@
 
 ## Setup
 
-Install [hk](https://hk.jdx.dev/getting_started.html) and enable the Git hooks
-after cloning:
+Install [mise](https://mise.jdx.dev/getting-started.html), then install the
+project tools and enable the Git hooks:
 
 ```sh
-hk install
+mise install
+mise exec -- hk install --mise
 ```
 
-The pre-commit hook runs `cargo fmt --check`. If it fails, run `cargo fmt` and
-stage the formatting changes before committing again.
+The pre-commit hook checks Rust and Markdown formatting. To format Markdown
+files, run:
+
+```sh
+mise exec -- hk fix --all --step prettier
+```
 
 ## Build and test
 
