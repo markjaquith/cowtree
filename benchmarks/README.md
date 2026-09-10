@@ -1,5 +1,72 @@
 # Compaction benchmark
 
+## Clone-first creation benchmark
+
+On macOS/APFS with Python 3 and Git, build a release binary and run:
+
+```sh
+cargo build --release
+python3 benchmarks/create.py target/release/cowtree --rounds 3
+python3 benchmarks/create.py target/release/cowtree --divergence 0 --files 100000
+python3 benchmarks/create.py target/release/cowtree --files 1000 --payload-bytes 1048576
+```
+
+This separate benchmark compares native `git worktree add`, native add followed
+by compaction, and `cowtree git worktree add`. It uses disposable native Git
+fixtures, isolated Git configuration, a clean same-volume donor, and a fresh
+destination for every trial. All creation, inventory, payload verification,
+cloning, checkout, final index validation, and receipt work is timed. The script
+also reports time including the first `git status`: compaction replaces files
+without refreshing the index, so command time alone defers some work to the next
+Git invocation. Repository setup and cleanup are outside the timed region. Trial
+order alternates between rounds; output includes individual timings, medians,
+and verified clone counts.
+
+`--divergence` is the percentage of files requiring Git materialization (default
+10). Use `--temp-dir` to choose the APFS volume. These are warm-cache measurements
+and do not measure device writes or prove unique physical savings. In particular,
+`du` attributes shared blocks to both clones. Record hardware, filesystem, Git
+version, and repeated timings; source hashing and filesystem metadata operations
+can outweigh avoided writes on some checkout shapes.
+
+### Creation reference measurements: September 10, 2026
+
+Apple M1 Max (10 logical CPUs, 64 GiB RAM), macOS 15.4.1, APFS, Git 2.45.0;
+three rounds per shape, alternating trial order. All expected clone counts were
+verified. The creation path uses up to four clone workers.
+
+Median whole-command times:
+
+| Fixture | Cloned files | Native add | Add + compact | Clone-first add |
+| --- | ---: | ---: | ---: | ---: |
+| 20,000 × 4 KiB, 10% divergent | 18,000 | 1.83 s | 5.66 s | 4.30 s |
+| 20,000 × 4 KiB, identical commit | 20,000 | 1.88 s | 5.98 s | 4.52 s |
+| 1,000 × 1 MiB, 10% divergent | 900 | 0.76 s | 3.46 s | 4.61 s |
+
+Median elapsed times including the first `git status`:
+
+| Fixture | Native add | Add + compact | Clone-first add |
+| --- | ---: | ---: | ---: |
+| 20,000 × 4 KiB, 10% divergent | 2.13 s | 6.74 s | 4.36 s |
+| 20,000 × 4 KiB, identical commit | 2.04 s | 7.21 s | 4.58 s |
+| 1,000 × 1 MiB, 10% divergent | 2.24 s | 7.34 s | 4.62 s |
+
+Clone-first creation was about 24% faster than add-plus-compact for the small-file
+command timings. For the large-file shape its command took about 33% longer,
+but including the first status it was about 37% faster. Compaction changes file
+identities without refreshing the target index; clone-first creation performs
+that validation before returning. Native Git can also rehash newly checked-out
+files when their index timestamps are racy. Both timings matter when comparing
+the workflows. Native add alone was fastest in these fixtures, but provides no
+COW sharing guarantee.
+
+These local measurements establish neither a universal speedup nor physical
+bytes saved. Donor verification reads file contents, and all methods pay Git and
+filesystem metadata costs. The architectural difference is that cloned paths
+avoid an initial ordinary checkout write and a later replacement pass.
+
+## Existing-worktree compaction benchmark
+
 Requires macOS/APFS, Python 3, Git, and Worktrunk (`wt`, used only to create the
 disposable benchmark worktrees). Build release binaries before measuring:
 

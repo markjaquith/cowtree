@@ -4,6 +4,8 @@ use std::{io, path::PathBuf};
 pub enum Error {
     #[error("Git command failed: {0}")]
     Git(String),
+    #[error("Git command failed: {message}")]
+    GitProcess { code: i32, message: String },
     #[error("not inside a Git worktree")]
     NotWorktree,
     #[error("worktree not found: {0}")]

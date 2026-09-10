@@ -18,7 +18,8 @@ use crate::{
 #[command(
     name = "cowtree",
     version,
-    about = "Compact Git worktrees with copy-on-write clones"
+    about = "Create and compact Git worktrees with copy-on-write clones",
+    after_help = "Git-compatible interface: cowtree git [<git-options>] worktree <command> [<args>]"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -284,7 +285,7 @@ fn run_status(cwd: &Path, worktrees: &[Worktree], args: StatusArgs) -> Result<()
     for target in targets {
         let located = receipt::read_for(target)?;
         let state = match located.as_ref() {
-            None => ReceiptState::NotCompacted,
+            None => receipt::creation_state(target),
             Some(Err(_)) => ReceiptState::Invalid,
             Some(Ok(value)) => {
                 let reference = format!("{}^{{commit}}", value.receipt.source_branch);

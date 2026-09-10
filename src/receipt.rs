@@ -15,6 +15,88 @@ use crate::{
 
 pub const CANONICAL_NAME: &str = "cowtree-compaction";
 pub const LEGACY_NAME: &str = "wt-prewarm-compaction";
+pub const CREATION_NAME: &str = "cowtree-creation";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CreationReceipt {
+    version: u32,
+    operation: String,
+    target_commit: String,
+    source_commits: Vec<String>,
+    cloned_files: u64,
+    completed_at: String,
+}
+
+pub fn write_creation(
+    admin: &std::path::Path,
+    target: &str,
+    sources: &[String],
+    cloned_files: u64,
+) -> Result<()> {
+    let receipt = CreationReceipt {
+        version: 1,
+        operation: "create".into(),
+        target_commit: target.into(),
+        source_commits: sources.to_vec(),
+        cloned_files,
+        completed_at: now()?,
+    };
+    let temporary = admin.join(format!(".{CREATION_NAME}.{}.tmp", std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        serde_json::to_writer(&mut file, &receipt)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&temporary, admin.join(CREATION_NAME))?;
+        File::open(admin)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+pub fn creation_state(worktree: &Worktree) -> ReceiptState {
+    let Ok(admin) = admin_dir(worktree) else {
+        return ReceiptState::Unknown;
+    };
+    let body = match fs::read(admin.join(CREATION_NAME)) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ReceiptState::NotCompacted;
+        }
+        Err(_) => return ReceiptState::Unknown,
+    };
+    let Ok(receipt) = serde_json::from_slice::<CreationReceipt>(&body) else {
+        return ReceiptState::Invalid;
+    };
+    if receipt.version != 1
+        || receipt.operation != "create"
+        || receipt.source_commits.is_empty()
+        || receipt.cloned_files == 0
+        || !valid_oid(&receipt.target_commit)
+        || receipt
+            .source_commits
+            .iter()
+            .any(|oid| !valid_oid(oid) || oid.len() != receipt.target_commit.len())
+        || receipt.completed_at.is_empty()
+    {
+        return ReceiptState::Invalid;
+    }
+    if receipt.target_commit == worktree.head {
+        ReceiptState::Created
+    } else {
+        ReceiptState::Stale
+    }
+}
+
+fn valid_oid(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Receipt {
@@ -31,6 +113,7 @@ pub struct Receipt {
 #[serde(rename_all = "snake_case")]
 pub enum ReceiptState {
     Compacted,
+    Created,
     Stale,
     NotCompacted,
     Invalid,
@@ -41,6 +124,7 @@ impl ReceiptState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Compacted => "compacted",
+            Self::Created => "created",
             Self::Stale => "stale",
             Self::NotCompacted => "not_compacted",
             Self::Invalid => "invalid",
