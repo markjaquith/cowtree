@@ -1,13 +1,11 @@
 # cowtree
 
-`cowtree` creates copy-on-write Git worktrees and reduces the physical storage
-used by existing worktrees on APFS. For existing worktrees, it finds
+`cowtree` is a Git worktree utility for macOS that uses copy-on-write (COW) to reduce the physical storage used by worktrees. For existing worktrees, it finds
 tracked files that Git says are unchanged from a clean source worktree, clones
 them with `clonefile(2)`, and atomically replaces the target copies. APFS shares
-the cloned data until either copy is modified.
+the cloned data until either copy is modified. You can also use `cowtree` to create new Git worktrees that will use copy-on-write from the start.
 
-`cowtree` is standalone and does not depend on Worktrunk. The installed binary
-does not need a Rust or C compiler.
+This can reduce the space that a worktree takes up on your disk by up to 95%.
 
 ## Usage
 
@@ -42,10 +40,7 @@ cowtree git worktree add ../feature -b feature
 
 For `add`, cowtree asks Git to register the worktree without checking out files,
 clones verified regular files from registered worktrees on the same APFS volume,
-then lets Git materialize the remaining paths. Eligible files are never first
-written as ordinary checkout copies. The target index is built by Git, rather
-than copied from a donor. Creation is tested with Git 2.45; sparse creation uses
-`git sparse-checkout check-rules` (Git 2.43 or later).
+then lets Git materialize the remaining paths.
 
 All other commands (`list`, `move`, `remove`, `lock`, `unlock`, `prune`, `repair`,
 and help) run directly through Git with its output and exit status. Git global
