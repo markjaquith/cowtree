@@ -1,5 +1,9 @@
 ---
 const githubUrl = "https://github.com/markjaquith/cowtree";
+const pageUrl = "https://markjaquith.github.io/cowtree/";
+const socialImageUrl = `${pageUrl}social-card.png`;
+const description =
+  "Space-efficient Git worktrees on macOS using APFS copy-on-write clones.";
 ---
 
 <!doctype html>
@@ -9,8 +13,22 @@ const githubUrl = "https://github.com/markjaquith/cowtree";
     <meta name="viewport" content="width=device-width" />
     <meta
       name="description"
-      content="Space-efficient Git worktrees on macOS using APFS copy-on-write clones."
+      content={description}
     />
+    <link rel="canonical" href={pageUrl} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="cowtree — space-efficient Git worktrees" />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={pageUrl} />
+    <meta property="og:image" content={socialImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="cowtree — space-efficient Git worktrees" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="cowtree — space-efficient Git worktrees" />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImageUrl} />
+    <meta name="twitter:image:alt" content="cowtree — space-efficient Git worktrees" />
     <title>cowtree — space-efficient Git worktrees</title>
   </head>
   <body>
