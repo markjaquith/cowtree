@@ -90,6 +90,16 @@ usage.
 
 ## Build and test
 
+Install [hk](https://hk.jdx.dev/getting_started.html) and enable the Git hooks
+after cloning:
+
+```sh
+hk install
+```
+
+The pre-commit hook runs `cargo fmt --check`. If it fails, run `cargo fmt`
+and stage the formatting changes before committing again.
+
 ```sh
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings

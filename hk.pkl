@@ -1,0 +1,11 @@
+amends "package://github.com/jdx/hk/releases/download/v1.57.0/hk@1.57.0#/Config.pkl"
+
+hooks {
+    ["pre-commit"] {
+        steps {
+            ["cargo-fmt"] {
+                check = "cargo fmt --check"
+            }
+        }
+    }
+}

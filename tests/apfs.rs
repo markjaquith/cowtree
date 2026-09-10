@@ -1,6 +1,13 @@
 #![cfg(target_os = "macos")]
 
-use std::{fs, path::Path, process::Command};
+use std::{
+    ffi::{CStr, CString},
+    fs,
+    mem::MaybeUninit,
+    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+    path::Path,
+    process::Command,
+};
 
 fn git(cwd: &Path, args: &[&str]) {
     let result = Command::new("git")
@@ -17,12 +24,136 @@ fn git(cwd: &Path, args: &[&str]) {
 }
 
 fn is_apfs(path: &Path) -> bool {
-    let output = Command::new("stat")
-        .args(["-f", "%T"])
-        .arg(path)
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    let mut stat = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: path is NUL-terminated and stat points to writable storage.
+    let result = unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) };
+    assert_eq!(
+        result,
+        0,
+        "statfs failed: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: a successful statfs initializes stat, including the NUL-terminated name.
+    let stat = unsafe { stat.assume_init() };
+    let filesystem = unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) };
+    filesystem.to_bytes() == b"apfs"
+}
+
+fn compact_all(repo: &Path) -> serde_json::Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_cowtree"))
+        .current_dir(repo)
+        .args(["compact", "--all", "--json"])
         .output()
         .unwrap();
-    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "apfs"
+    assert!(
+        output.status.success(),
+        "compact --all failed: {}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
+    let root = tempfile::tempdir().unwrap();
+    if !is_apfs(root.path()) {
+        return;
+    }
+    let repo = root.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "--initial-branch=main"]);
+    git(&repo, &["config", "user.email", "cowtree@example.com"]);
+    git(&repo, &["config", "user.name", "cowtree test"]);
+    fs::write(repo.join("same"), "same\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "fixture"]);
+
+    for branch in ["feature-one", "feature-two"] {
+        let target = root.path().join(branch);
+        git(
+            &repo,
+            &["worktree", "add", "-b", branch, target.to_str().unwrap()],
+        );
+    }
+
+    let first = compact_all(&repo);
+    assert_eq!(first["schema_version"], 1);
+    assert_eq!(
+        first["summary"],
+        serde_json::json!({"compacted": 2, "skipped": 0, "failed": 0})
+    );
+    let results = first["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    let mut snapshots = Vec::new();
+    for branch in ["feature-one", "feature-two"] {
+        let target = root.path().join(branch);
+        let canonical_target = target.canonicalize().unwrap();
+        let result = results
+            .iter()
+            .find(|result| result["worktree"] == canonical_target.to_str().unwrap())
+            .unwrap();
+        assert_eq!(result["outcome"], "compacted");
+        assert_eq!(result["cloned_files"], 1);
+        assert_eq!(fs::read_to_string(target.join("same")).unwrap(), "same\n");
+        let receipt = repo
+            .join(".git/worktrees")
+            .join(branch)
+            .join("cowtree-compaction");
+        snapshots.push((
+            target.join("same"),
+            fs::metadata(target.join("same")).unwrap().ino(),
+            receipt.clone(),
+            fs::metadata(&receipt).unwrap().ino(),
+            fs::read(&receipt).unwrap(),
+        ));
+    }
+    assert!(!repo.join(".git/cowtree-compaction").exists());
+
+    let fresh = root.path().join("feature-three");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature-three",
+            fresh.to_str().unwrap(),
+        ],
+    );
+
+    // Exercise both a mixed batch and a batch with nothing left to compact.
+    for (compacted, skipped) in [(1, 2), (0, 3)] {
+        let batch = compact_all(&repo);
+        assert_eq!(
+            batch["summary"],
+            serde_json::json!({"compacted": compacted, "skipped": skipped, "failed": 0})
+        );
+        let results = batch["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        for branch in ["feature-one", "feature-two", "feature-three"] {
+            let target = root.path().join(branch).canonicalize().unwrap();
+            let result = results
+                .iter()
+                .find(|result| result["worktree"] == target.to_str().unwrap())
+                .unwrap();
+            if branch == "feature-three" && compacted == 1 {
+                assert_eq!(result["outcome"], "compacted");
+                assert_eq!(result["cloned_files"], 1);
+            } else {
+                assert_eq!(result["outcome"], "skipped_current_receipt");
+                assert_eq!(result["cloned_files"], 0);
+            }
+            assert_eq!(fs::read_to_string(target.join("same")).unwrap(), "same\n");
+        }
+        for (file, file_inode, receipt, receipt_inode, contents) in &snapshots {
+            assert_eq!(fs::metadata(file).unwrap().ino(), *file_inode);
+            assert_eq!(fs::metadata(receipt).unwrap().ino(), *receipt_inode);
+            assert_eq!(fs::read(receipt).unwrap(), *contents);
+        }
+        assert!(!repo.join(".git/cowtree-compaction").exists());
+    }
 }
 
 #[test]
