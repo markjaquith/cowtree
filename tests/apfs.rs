@@ -4,7 +4,10 @@ use std::{
     ffi::{CStr, CString},
     fs,
     mem::MaybeUninit,
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, PermissionsExt},
+    },
     path::Path,
     process::Command,
 };
@@ -172,6 +175,20 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     fs::write(repo.join("committed"), "main\n").unwrap();
     fs::write(repo.join("dirty"), "clean\n").unwrap();
     fs::write(repo.join("staged"), "clean\n").unwrap();
+    // Enough files to exercise the bounded parallel cloning path, with shared
+    // ancestors to cover the directory-validation cache as well.
+    for directory in 0..16 {
+        let directory = repo.join(format!("nested/{directory}"));
+        fs::create_dir_all(&directory).unwrap();
+        for file in 0..64 {
+            fs::write(directory.join(format!("{file}.txt")), "shared contents\n").unwrap();
+        }
+    }
+    fs::set_permissions(
+        repo.join("nested/0/2.txt"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
     std::os::unix::fs::symlink("same", repo.join("link")).unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "fixture"]);
@@ -186,6 +203,12 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     fs::write(target.join("staged"), "staged\n").unwrap();
     git(&target, &["add", "staged"]);
 
+    fs::set_permissions(
+        target.join("nested/0/1.txt"),
+        fs::Permissions::from_mode(0o640),
+    )
+    .unwrap();
+    let before = fs::metadata(target.join("nested/0/0.txt")).unwrap();
     let binary = env!("CARGO_BIN_EXE_cowtree");
     let compact = Command::new(binary)
         .current_dir(&repo)
@@ -199,7 +222,28 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     );
     let json: serde_json::Value = serde_json::from_slice(&compact.stdout).unwrap();
     assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["results"][0]["cloned_files"], 1);
+    assert_eq!(json["results"][0]["cloned_files"], 1025);
+    let after = fs::metadata(target.join("nested/0/0.txt")).unwrap();
+    assert_ne!(before.ino(), after.ino());
+    assert_eq!(before.mode(), after.mode());
+    assert_eq!(before.mtime(), after.mtime());
+    assert_eq!(before.mtime_nsec(), after.mtime_nsec());
+    assert_eq!(
+        fs::metadata(target.join("nested/0/1.txt")).unwrap().mode() & 0o7777,
+        0o640
+    );
+    assert_eq!(
+        fs::metadata(target.join("nested/0/2.txt")).unwrap().mode() & 0o7777,
+        0o755
+    );
+    for directory in 0..16 {
+        for file in 0..64 {
+            assert_eq!(
+                fs::read_to_string(target.join(format!("nested/{directory}/{file}.txt"))).unwrap(),
+                "shared contents\n"
+            );
+        }
+    }
     assert_eq!(
         fs::read_to_string(target.join("committed")).unwrap(),
         "feature\n"

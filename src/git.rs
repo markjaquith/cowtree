@@ -33,11 +33,10 @@ where
     Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
-pub fn nul_paths(bytes: &[u8]) -> Vec<&[u8]> {
+pub fn nul_paths(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     bytes
         .split(|byte| *byte == 0)
         .filter(|part| !part.is_empty())
-        .collect()
 }
 
 #[cfg(test)]
@@ -48,7 +47,7 @@ mod tests {
     fn parses_nul_paths_without_interpreting_content() {
         let input = b"space name\0tab\tname\0line\nname\0-leading\0unicode-\xe2\x98\x83\0";
         assert_eq!(
-            nul_paths(input),
+            nul_paths(input).collect::<Vec<_>>(),
             vec![
                 &b"space name"[..],
                 &b"tab\tname"[..],

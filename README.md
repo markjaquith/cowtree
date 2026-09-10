@@ -32,6 +32,20 @@ remote's default branch), then `main`, then `master`. It must be clean and its
 HEAD must equal the selected branch tip. Source and target must be on the same
 APFS volume. `cowtree` never falls back to a full copy.
 
+## Large checkouts
+
+Large worktrees are compacted with up to four parallel workers, bounded by
+available CPU parallelism and the number of eligible files. Small worktrees use
+the serial path to avoid thread startup overhead. `--all` processes one worktree
+at a time and skips targets with current receipts.
+
+Path parsing avoids copying Git's exclusion list, and validated parent
+directories are cached during eligibility scanning. Cloning retains per-file
+race checks; all workers finish before final validation and receipt creation.
+
+See [the benchmark guide](benchmarks/README.md) for reproducible large-checkout
+and receipt-skip timings.
+
 ## Safety model
 
 Git is the authority for tracked paths and checkout state. For each target,
@@ -49,8 +63,8 @@ target; they never trigger a byte-copy fallback. `cowtree` never runs `reset`,
 
 There is an unavoidable final race between the target check and rename. Run
 compaction on idle worktrees, especially when editors, builds, or Git commands
-may be writing files. Interruptions can leave a `.cowtree-clone.*` sibling for
-the file active at that instant, but no completion receipt is written.
+may be writing files. Interruptions can leave `.cowtree-clone.*` siblings for
+files active at that instant, but no completion receipt is written.
 
 ## Receipts and status
 

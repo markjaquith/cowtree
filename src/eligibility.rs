@@ -39,10 +39,7 @@ pub fn calculate(source: &Worktree, target: &Worktree, source_commit: &str) -> R
             "--",
         ],
     )?;
-    let excluded: HashSet<Vec<u8>> = git::nul_paths(&changed)
-        .into_iter()
-        .map(<[u8]>::to_vec)
-        .collect();
+    let excluded: HashSet<&[u8]> = git::nul_paths(&changed).collect();
     let mut hasher = Sha256::new();
     let mut sorted_excluded: Vec<_> = excluded.iter().collect();
     sorted_excluded.sort_unstable();
@@ -96,6 +93,9 @@ fn validate_ancestors(
     let Some(parent) = relative.parent() else {
         return Ok(());
     };
+    if known_safe.contains(&root.join(parent)) {
+        return Ok(());
+    }
     let mut current = root.to_owned();
     for component in parent.components() {
         current.push(component);

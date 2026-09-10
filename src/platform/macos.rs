@@ -117,10 +117,13 @@ pub fn clone_replacing(
         if Identity::from(&source_before) != Identity::from(&source_after) {
             return Ok(CloneOutcome::ChangedDuringClone);
         }
-        fs::set_permissions(
-            &temporary,
-            fs::Permissions::from_mode(target_before.mode() & 0o7777),
-        )?;
+        // clonefile preserves the source mode except for setuid/setgid. Most
+        // worktree files already have the desired mode, so avoid an extra
+        // metadata write for every file in a large checkout.
+        let target_mode = target_before.mode() & 0o7777;
+        if source_before.mode() & 0o1777 != target_mode {
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(target_mode))?;
+        }
         set_times(&temporary, &target_before)?;
         let target_after = fs::symlink_metadata(&target)?;
         if Identity::from(&target_before) != Identity::from(&target_after) {
