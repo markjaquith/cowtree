@@ -173,6 +173,22 @@ pub fn post_checkout(git: &Git, target: &Path, commit: &str) -> Result<i32> {
     Ok(exit_code(status))
 }
 
+/// Git exports these global switches to commands launched by hooks as well.
+/// Keep parsing and hook inheritance driven by the same mapping.
+fn inherited_env(option: &[u8]) -> Option<(&'static str, &'static str)> {
+    Some(match option {
+        b"--literal-pathspecs" => ("GIT_LITERAL_PATHSPECS", "1"),
+        b"--glob-pathspecs" => ("GIT_GLOB_PATHSPECS", "1"),
+        b"--noglob-pathspecs" => ("GIT_NOGLOB_PATHSPECS", "1"),
+        b"--icase-pathspecs" => ("GIT_ICASE_PATHSPECS", "1"),
+        b"--no-optional-locks" => ("GIT_OPTIONAL_LOCKS", "0"),
+        b"--no-replace-objects" => ("GIT_NO_REPLACE_OBJECTS", "1"),
+        b"--no-lazy-fetch" => ("GIT_NO_LAZY_FETCH", "1"),
+        b"--no-advice" => ("GIT_ADVICE", "0"),
+        _ => return None,
+    })
+}
+
 fn hook_environment(git: &Git, command: &mut Command) -> Result<()> {
     let mut parameters = std::env::var_os("GIT_CONFIG_PARAMETERS")
         .unwrap_or_default()
@@ -225,22 +241,8 @@ fn hook_environment(git: &Git, command: &mut Command) -> Result<()> {
             command.env("GIT_NAMESPACE", std::ffi::OsStr::from_bytes(value));
         } else if let Some(value) = raw.strip_prefix(b"--exec-path=") {
             command.env("GIT_EXEC_PATH", std::ffi::OsStr::from_bytes(value));
-        } else {
-            match raw {
-                b"--no-optional-locks" => {
-                    command.env("GIT_OPTIONAL_LOCKS", "0");
-                }
-                b"--no-replace-objects" => {
-                    command.env("GIT_NO_REPLACE_OBJECTS", "1");
-                }
-                b"--no-lazy-fetch" => {
-                    command.env("GIT_NO_LAZY_FETCH", "1");
-                }
-                b"--no-advice" => {
-                    command.env("GIT_ADVICE", "0");
-                }
-                _ => {}
-            }
+        } else if let Some((key, value)) = inherited_env(raw) {
+            command.env(key, value);
         }
         i += 1;
     }
@@ -370,7 +372,8 @@ fn globals(args: &[OsString]) -> Result<Option<(usize, Vec<OsString>)>> {
         let keep = matches!(bytes, b"-c" | b"--namespace" | b"--config-env")
             || bytes.starts_with(b"--namespace=")
             || bytes.starts_with(b"--config-env=")
-            || (bytes.starts_with(b"-c") && bytes.len() > 2);
+            || (bytes.starts_with(b"-c") && bytes.len() > 2)
+            || inherited_env(bytes).is_some();
         if keep {
             options.push(arg.clone());
         }
@@ -385,19 +388,7 @@ fn globals(args: &[OsString]) -> Result<Option<(usize, Vec<OsString>)>> {
         } else if !keep
             && !matches!(
                 bytes,
-                b"--bare"
-                    | b"--no-pager"
-                    | b"-P"
-                    | b"--paginate"
-                    | b"-p"
-                    | b"--no-optional-locks"
-                    | b"--literal-pathspecs"
-                    | b"--glob-pathspecs"
-                    | b"--noglob-pathspecs"
-                    | b"--icase-pathspecs"
-                    | b"--no-replace-objects"
-                    | b"--no-lazy-fetch"
-                    | b"--no-advice"
+                b"--bare" | b"--no-pager" | b"-P" | b"--paginate" | b"-p"
             )
             && !bytes.starts_with(b"--git-dir=")
             && !bytes.starts_with(b"--work-tree=")
@@ -408,11 +399,7 @@ fn globals(args: &[OsString]) -> Result<Option<(usize, Vec<OsString>)>> {
                 "unsupported Git global option: {}; cannot safely locate the worktree command",
                 arg.to_string_lossy()
             )));
-        } else if matches!(
-            bytes,
-            b"--no-replace-objects" | b"--no-lazy-fetch" | b"--no-advice" | b"--no-optional-locks"
-        ) || bytes.starts_with(b"--exec-path=")
-        {
+        } else if bytes.starts_with(b"--exec-path=") {
             options.push(arg.clone());
         }
         i += 1;

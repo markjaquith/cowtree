@@ -925,3 +925,51 @@ fn empty_attribute_values_match_native_checkout() {
         assert_eq!(fs::read(target.join("changed")).unwrap(), b"before\n");
     }
 }
+
+#[test]
+fn global_pathspec_options_reach_checkout_hooks() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    fs::write(f.repo.join("glob*.txt"), "literal filename").unwrap();
+    fs::write(f.repo.join("glob-other.txt"), "wildcard match").unwrap();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-qm", "pathspec fixture"]);
+    let hook = f.repo.join(".git/hooks/post-checkout");
+    fs::write(&hook, "#!/bin/sh\nprintf '%s:%s:%s:%s\\n' \"$GIT_LITERAL_PATHSPECS\" \"$GIT_GLOB_PATHSPECS\" \"$GIT_NOGLOB_PATHSPECS\" \"$GIT_ICASE_PATHSPECS\" > hook-result\ngit ls-files -- 'glob*.txt' >> hook-result\n").unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    for (n, option) in [
+        "--literal-pathspecs",
+        "--glob-pathspecs",
+        "--noglob-pathspecs",
+        "--icase-pathspecs",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut results = Vec::new();
+        for cow in [false, true] {
+            let mut cmd = command(
+                &f.repo,
+                if cow {
+                    env!("CARGO_BIN_EXE_cowtree")
+                } else {
+                    "git"
+                },
+            );
+            if cow {
+                cmd.arg("git");
+            }
+            let target = f.target(&format!("pathspec-{n}-{cow}"));
+            success(
+                &cmd.args([option, "worktree", "add", "--detach"])
+                    .arg(&target)
+                    .output()
+                    .unwrap(),
+            );
+            results.push(fs::read(target.join("hook-result")).unwrap());
+        }
+        assert_eq!(results[0], results[1], "{option}");
+    }
+}
