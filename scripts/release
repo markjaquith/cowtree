@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/release [major|minor|patch]
+
+Bumps the crate version, runs checks, commits, tags, and pushes the release.
+When no version level is given, an interactive prompt is shown.
+EOF
+}
+
+fail() {
+  echo "release: $*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+[[ $# -le 1 ]] || fail "expected at most one argument"
+command -v cargo >/dev/null || fail "cargo is required"
+command -v git >/dev/null || fail "git is required"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "not in a Git repository"
+cd "$repo_root"
+
+[[ -z $(git status --porcelain) ]] || fail "working tree must be clean"
+
+branch="$(git branch --show-current)"
+[[ $branch == "main" ]] || fail "releases must be made from main (currently $branch)"
+
+echo "Checking origin/main..."
+git fetch --quiet origin main
+git merge-base --is-ancestor origin/main HEAD || fail "main is behind or has diverged from origin/main; sync it first"
+
+level=${1:-}
+if [[ -z $level ]]; then
+  current_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+  echo "Current version: $current_version"
+  echo "1) patch"
+  echo "2) minor"
+  echo "3) major"
+  read -r -p "Choose release type [1-3]: " choice
+  case "$choice" in
+    1|patch) level="patch" ;;
+    2|minor) level="minor" ;;
+    3|major) level="major" ;;
+    *) fail "invalid release type: $choice" ;;
+  esac
+fi
+
+case "$level" in
+  major|minor|patch) ;;
+  *) fail "release type must be major, minor, or patch" ;;
+esac
+
+current_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+[[ $current_version =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || \
+  fail "Cargo.toml version is not a stable semantic version: $current_version"
+
+major=${BASH_REMATCH[1]}
+minor=${BASH_REMATCH[2]}
+patch=${BASH_REMATCH[3]}
+case "$level" in
+  major) new_version="$((major + 1)).0.0" ;;
+  minor) new_version="$major.$((minor + 1)).0" ;;
+  patch) new_version="$major.$minor.$((patch + 1))" ;;
+esac
+
+tag="v$new_version"
+git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null && fail "tag $tag already exists locally"
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+  fail "tag $tag already exists on origin"
+fi
+
+echo "Release $current_version -> $new_version ($level)"
+read -r -p "Continue? [y/N] " confirmation
+[[ $confirmation == "y" || $confirmation == "Y" ]] || fail "cancelled"
+
+CURRENT_VERSION="$current_version" NEW_VERSION="$new_version" perl -0pi -e '
+  my $old = $ENV{CURRENT_VERSION};
+  my $new = $ENV{NEW_VERSION};
+  s/(^\[package\].*?^version\s*=\s*")\Q$old\E(")/${1}${new}${2}/ms
+    or die "could not update package version\n";
+' Cargo.toml
+
+# Refresh the root package entry in Cargo.lock.
+cargo check
+
+echo "Running release checks..."
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+cargo package --allow-dirty --locked
+
+git add Cargo.toml Cargo.lock
+git commit -m "Release $tag"
+git tag --annotate "$tag" --message "Release $tag"
+
+echo "Pushing main and $tag..."
+git push --atomic origin main "$tag"
+echo "Released $tag; GitHub Actions will publish it."
