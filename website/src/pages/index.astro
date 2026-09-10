@@ -4,6 +4,7 @@ const pageUrl = "https://markjaquith.github.io/cowtree/";
 const socialImageUrl = `${pageUrl}social-card.png`;
 const description =
   "Space-efficient Git worktrees on macOS using APFS copy-on-write clones.";
+const baseUrl = import.meta.env.BASE_URL;
 ---
 
 <!doctype html>
@@ -14,7 +15,7 @@ const description =
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,400;0,500;0,600;0,700;1,500&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
     <meta
@@ -70,6 +71,26 @@ cowtree compact --all
 
 <span class="comment"># See compaction status</span>
 cowtree status --all</code></pre>
+      </section>
+
+      <section aria-labelledby="feedback-heading">
+        <h2 id="feedback-heading">Feedback</h2>
+        <figure class="pull-quote cow-quote">
+          <div>
+            <blockquote>
+              <p>COW means copy-on-write. Please remove me from your mailing list.</p>
+            </blockquote>
+          </div>
+          <img src={`${baseUrl}cow.png`} alt="Illustrated Highland cow" width="112" height="103" />
+        </figure>
+        <figure class="pull-quote">
+          <img src={`${baseUrl}tree.png`} alt="Illustrated oak tree" width="92" height="105" />
+          <div>
+            <blockquote>
+              <p>You nerds need to touch grass.</p>
+            </blockquote>
+          </div>
+        </figure>
       </section>
 
       <footer>
@@ -181,6 +202,48 @@ cowtree status --all</code></pre>
     color: #9fb0a0;
   }
 
+  .pull-quote {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 1.5rem;
+    margin: 2rem 0 0;
+    padding: 1.25rem 1.5rem;
+    border-left: 4px solid #507455;
+    background: #ebe9dd;
+  }
+
+  .pull-quote img {
+    flex: 0 0 auto;
+    object-fit: contain;
+  }
+
+  .pull-quote blockquote {
+    margin: 0;
+  }
+
+  .cow-quote {
+    grid-template-columns: 1fr auto;
+  }
+
+  .pull-quote p {
+    margin: 0;
+    color: #2f3d33;
+    font-size: clamp(1.2rem, 2.5vw, 1.45rem);
+    font-style: italic;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    line-height: 1.35;
+  }
+
+  .pull-quote p::before {
+    content: "“";
+  }
+
+  .pull-quote p::after {
+    content: "”";
+  }
+
   footer {
     padding-top: 1rem;
     border-top: 1px solid #ced3c8;
@@ -191,6 +254,16 @@ cowtree status --all</code></pre>
   @media (max-width: 34rem) {
     main {
       padding-top: 3.5rem;
+    }
+
+    .pull-quote {
+      gap: 1rem;
+      padding: 1rem;
+    }
+
+    .pull-quote img {
+      width: 72px;
+      height: auto;
     }
 
     nav {
