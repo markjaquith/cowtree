@@ -425,22 +425,32 @@ fn populate(
     }
     // Git's native add retains the completed worktree when a hook fails.
     let code = git_worktree::post_checkout(git, &path, &commit)?;
-    // Hooks may rewrite clones or switch HEAD. A creation receipt records only
-    // clones whose identities survived the hook, never hook-generated copies.
-    let retained = cloned
-        .iter()
-        .filter(|seed| {
-            identity(&path.join(seed)).is_ok_and(|value| creation.owned.get(*seed) == Some(&value))
-        })
-        .count();
+    let record = || -> Result<()> {
+        // Hooks may rewrite clones or switch HEAD. Record only clones whose
+        // identities survived the hook, never hook-generated copies.
+        let retained = cloned
+            .iter()
+            .filter(|seed| {
+                identity(&path.join(seed))
+                    .is_ok_and(|value| creation.owned.get(*seed) == Some(&value))
+            })
+            .count();
+        if retained > 0
+            && creation.verify_authority().is_ok()
+            && git.text(&path, &["rev-parse", "HEAD"])? == commit
+        {
+            let mut provenance: Vec<_> = provenance.into_iter().collect();
+            provenance.sort();
+            receipt::write_creation(&creation.admin, &commit, &provenance, retained as u64)?;
+        }
+        Ok(())
+    };
+    // Creation and the hook have finished. Optional bookkeeping must not turn
+    // their success into a failure that encourages callers to retry `add`.
     if code == 0
-        && retained > 0
-        && creation.verify_authority().is_ok()
-        && git.text(&path, &["rev-parse", "HEAD"])? == commit
+        && let Err(error) = record()
     {
-        let mut provenance: Vec<_> = provenance.into_iter().collect();
-        provenance.sort();
-        receipt::write_creation(&creation.admin, &commit, &provenance, retained as u64)?;
+        eprintln!("cowtree: worktree created, but could not record creation receipt: {error}");
     }
     Ok(code)
 }

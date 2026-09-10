@@ -973,3 +973,31 @@ fn global_pathspec_options_reach_checkout_hooks() {
         assert_eq!(results[0], results[1], "{option}");
     }
 }
+
+#[test]
+fn receipt_failure_does_not_fail_a_completed_checkout() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    let hook = f.repo.join(".git/hooks/post-checkout");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nmkdir \"$(git rev-parse --git-path cowtree-creation)\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = f.add("receipt-error", &["-b", "receipt-error"]);
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("receipt"));
+    assert!(git(&f.target("receipt-error"), &["status", "--porcelain"]).is_empty());
+    assert_eq!(
+        fs::read(f.target("receipt-error").join("same")).unwrap(),
+        b"unchanged payload\n"
+    );
+    assert!(
+        f.repo
+            .join(".git/worktrees/receipt-error/cowtree-creation")
+            .is_dir()
+    );
+}

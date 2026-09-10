@@ -168,7 +168,9 @@ Clone-first creation records a separate versioned JSON receipt at
 `<per-worktree Git admin directory>/cowtree-creation`, containing immutable source
 commit IDs, the target commit, and the count of clones still intact after the
 hook. It stays meaningful after donor branch deletion or donor removal. Failed
-hooks do not produce a creation receipt. Creation receipts do not suppress a
+hooks do not produce a creation receipt. Receipt-writing failures produce a
+warning without changing a successfully completed checkout's exit status.
+Creation receipts do not suppress a
 later explicit compaction or `compact --all`: compaction can have a different
 donor and candidate set. A later compaction receipt takes precedence in status.
 Like `compacted`, `created` attests to the operation, not current shared extents.
