@@ -96,7 +96,7 @@ and receipt-skip timings.
 Git is the authority for tracked paths and checkout state. For each target,
 `cowtree` asks Git for every path that differs from the source commit, including
 committed divergence, staged changes, and unstaged changes. Those paths are
-excluded. Untracked and ignored files are always skipped. Symlinks,
+excluded. Untracked and ignored files are not compaction candidates. Symlinks,
 submodules, sparse-checkout omissions, and special files are skipped.
 
 Before replacing a file, `cowtree` checks source and target device, inode, size,
@@ -109,7 +109,11 @@ target; they never trigger a byte-copy fallback. `cowtree` never runs `reset`,
 There is an unavoidable final race between the target check and rename. Run
 compaction on idle worktrees, especially when editors, builds, or Git commands
 may be writing files. Interruptions can leave `.cowtree-clone.*` siblings for
-files active at that instant, but no completion receipt is written.
+files active at that instant, but no completion receipt is written. A later
+compaction removes stale clone siblings when their names exactly match cowtree's
+temporary format, their original tracked files still exist, and their creating
+process is no longer running. Git must also report the sibling as untracked and
+non-ignored. Dry runs never remove them.
 
 ## Receipts and status
 

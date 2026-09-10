@@ -58,6 +58,89 @@ fn compact_all(repo: &Path) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn compact(repo: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_cowtree"))
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn retry_removes_only_stale_clone_files_and_dry_run_removes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    if !is_apfs(root.path()) {
+        return;
+    }
+    let repo = root.path().join("repo");
+    let target = root.path().join("feature");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "--initial-branch=main"]);
+    git(&repo, &["config", "user.email", "cowtree@example.com"]);
+    git(&repo, &["config", "user.name", "cowtree test"]);
+    fs::write(repo.join("same"), "same\n").unwrap();
+    fs::write(
+        repo.join(".gitignore"),
+        format!("same.cowtree-clone.{}.9.*\n", i32::MAX),
+    )
+    .unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "fixture"]);
+    git(
+        &repo,
+        &["worktree", "add", "-b", "feature", target.to_str().unwrap()],
+    );
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stale = target.join(format!("same.cowtree-clone.{}.0.{now}", i32::MAX));
+    let active = target.join(format!("same.cowtree-clone.{}.1.{now}", std::process::id()));
+    let malformed = target.join("same.cowtree-clone.not-a-pid.2.3");
+    let ignored = target.join(format!("same.cowtree-clone.{}.9.{now}", i32::MAX));
+    for path in [&stale, &active, &malformed, &ignored] {
+        fs::write(path, "temporary clone").unwrap();
+    }
+
+    let dry_run = compact(&repo, &["compact", "feature", "--dry-run"]);
+    assert!(dry_run.status.success());
+    assert!(stale.exists());
+    assert!(active.exists());
+    assert!(malformed.exists());
+    assert!(ignored.exists());
+
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(&target)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .unwrap();
+    assert!(
+        listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .any(|path| path == stale.file_name().unwrap().as_bytes()),
+        "stale clone was not reported as untracked: {:?}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+
+    let retry = compact(&repo, &["compact", "feature"]);
+    assert!(
+        retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(
+        !stale.exists(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(active.exists());
+    assert!(malformed.exists());
+    assert!(ignored.exists());
+}
+
 #[test]
 fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
     let root = tempfile::tempdir().unwrap();

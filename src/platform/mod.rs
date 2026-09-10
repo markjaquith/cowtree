@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -29,6 +29,20 @@ pub trait ClonePlatform {
 }
 
 pub struct SystemPlatform;
+
+pub fn cleanup_stale_clones(
+    target: &Path,
+    tracked: &[PathBuf],
+    untracked: &[PathBuf],
+) -> Result<u64> {
+    #[cfg(target_os = "macos")]
+    return macos::cleanup_stale_clones(target, tracked, untracked);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (target, tracked, untracked);
+        Ok(0)
+    }
+}
 
 pub fn clone_new(
     source: &Path,

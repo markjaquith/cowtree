@@ -1,4 +1,5 @@
 use std::{
+    os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -10,7 +11,7 @@ use crate::{
     error::{Error, Result},
     git,
     output::{CompactResult, EstimateResult},
-    platform::{CloneOutcome, ClonePlatform, SystemPlatform},
+    platform::{self, CloneOutcome, ClonePlatform, SystemPlatform},
     receipt::{self, Receipt, ReceiptState},
     worktree::Worktree,
 };
@@ -65,6 +66,20 @@ pub fn compact_one(
     let source_commit = validate_source(source)?;
     let platform = SystemPlatform;
     platform.validate(&source.path, &target.path)?;
+    if !dry_run {
+        let tracked = git::output(&target.path, ["ls-files", "--cached", "-z"])?;
+        let tracked: Vec<_> = git::nul_paths(&tracked)
+            .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path.to_vec())))
+            .collect();
+        let untracked = git::output(
+            &target.path,
+            ["ls-files", "--others", "--exclude-standard", "-z"],
+        )?;
+        let untracked: Vec<_> = git::nul_paths(&untracked)
+            .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path.to_vec())))
+            .collect();
+        platform::cleanup_stale_clones(&target.path, &tracked, &untracked)?;
+    }
     let eligible = eligibility::calculate(source, target, &source_commit)?;
     let mut cloned = 0u64;
     let mut raced = 0u64;
