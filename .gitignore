@@ -1,6 +1,6 @@
 /target
-/website/.astro
-/website/dist
-/website/node_modules
+/site/.astro
+/site/dist
+/site/node_modules
 *.swp
 .DS_Store

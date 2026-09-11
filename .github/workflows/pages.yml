@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'website/**'
+      - 'site/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -27,15 +27,15 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: website/package-lock.json
+          cache-dependency-path: site/package-lock.json
       - run: npm ci
-        working-directory: website
+        working-directory: site
       - run: npm run build
-        working-directory: website
+        working-directory: site
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: website/dist
+          path: site/dist
 
   deploy:
     environment:
