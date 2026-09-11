@@ -115,41 +115,6 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-pub fn default_source(worktrees: &[Worktree], cwd: &Path) -> Result<Worktree> {
-    let inferred = git::text(
-        cwd,
-        [
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
-    )
-    .ok()
-    .and_then(|name| name.strip_prefix("origin/").map(str::to_owned))
-    .or_else(|| {
-        ["main", "master"]
-            .into_iter()
-            .find(|name| {
-                let reference = format!("refs/heads/{name}^{{commit}}");
-                git::text(cwd, ["rev-parse", "--verify", &reference]).is_ok()
-            })
-            .map(str::to_owned)
-    })
-    .ok_or_else(|| {
-        Error::Message("could not infer source branch from origin/HEAD, main, or master".into())
-    })?;
-    if !worktrees
-        .iter()
-        .any(|worktree| worktree.branch.as_deref() == Some(&inferred))
-    {
-        return Err(Error::Message(format!(
-            "default source branch '{inferred}' is not checked out; create a worktree for it or pass --source <checked-out-branch-or-path>"
-        )));
-    }
-    resolve(worktrees, Path::new(&inferred)).cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

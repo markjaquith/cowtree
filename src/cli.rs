@@ -9,7 +9,6 @@ use usage::{Args, Cli as UsageCli, Subcommands};
 use crate::{
     add, compact,
     error::{Error, Result},
-    git,
     output::{
         self, CompactOutcome, CompactResult, CompactSummary, CompactUi, Envelope, StatusResult,
     },
@@ -51,10 +50,10 @@ struct AddArgs {
 struct OperationArgs {
     /// Branch or registered worktree path
     target: Option<PathBuf>,
-    /// Process every linked worktree except the source
+    /// Process every linked worktree except the current or restricted source
     #[usage(long, conflicts("target"))]
     all: bool,
-    /// Checked-out source branch or worktree path
+    /// Restrict donors to one checked-out branch or worktree path
     #[usage(long)]
     source: Option<PathBuf>,
     /// Emit stable, versioned JSON
@@ -91,13 +90,6 @@ pub fn run(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 
-fn source_for(cwd: &Path, worktrees: &[Worktree], requested: Option<&PathBuf>) -> Result<Worktree> {
-    match requested {
-        Some(value) => worktree::resolve(worktrees, value).cloned(),
-        None => worktree::default_source(worktrees, cwd),
-    }
-}
-
 fn targets_for<'a>(
     cwd: &Path,
     worktrees: &'a [Worktree],
@@ -119,21 +111,26 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
     if !args.all && args.target.is_none() {
         return Err(Error::Message("compact requires a target or --all".into()));
     }
-    let source = source_for(cwd, worktrees, args.source.as_ref())?;
-    compact::validate_source(&source)?;
+    let restricted = args
+        .source
+        .as_ref()
+        .map(|source| worktree::resolve(worktrees, source).cloned())
+        .transpose()?;
+    let current = worktree::resolve(worktrees, cwd).ok();
     let targets = targets_for(
         cwd,
         worktrees,
         args.target.as_ref(),
         args.all,
-        Some(&source),
+        restricted.as_ref().or(current),
     )?;
+    let donors: Vec<_> = restricted.map_or_else(|| worktrees.to_vec(), |source| vec![source]);
     let total = targets.len();
     let mut results = Vec::new();
     let mut summary = CompactSummary::default();
     let mut ui = CompactUi::new();
     for (index, target) in targets.into_iter().enumerate() {
-        if args.all && compact::is_current_receipt(&source, target) {
+        if args.all && compact::is_current_receipt(target) {
             summary.already_compacted += 1;
             if !args.json {
                 ui.already_compacted(index + 1, total, &target.label());
@@ -156,7 +153,7 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
         if !args.json {
             ui.start(index + 1, total, &target.label(), args.dry_run);
         }
-        match compact::compact_one(&source, target, args.dry_run) {
+        match compact::compact_one(&donors, target, args.dry_run, args.source.is_some()) {
             Ok((result, seconds)) => {
                 summary.compacted += usize::from(!args.dry_run);
                 summary.dry_run += usize::from(args.dry_run);
@@ -173,7 +170,7 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
                 results.push(CompactResult {
                     branch: target.branch.clone(),
                     path: target.path.to_string_lossy().into_owned(),
-                    status: compact::status(&source, target),
+                    status: compact::status(target),
                     outcome: CompactOutcome::Failed,
                     cloned_files: None,
                     eligible_files: None,
@@ -205,22 +202,8 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
 }
 
 fn run_status(cwd: &Path, worktrees: &[Worktree], args: StatusArgs) -> Result<()> {
-    let source = worktree::default_source(worktrees, cwd)?;
-    let targets = targets_for(
-        cwd,
-        worktrees,
-        args.target.as_ref(),
-        args.all,
-        Some(&source),
-    )?;
-    if targets
-        .first()
-        .is_some_and(|target| target.path == source.path)
-    {
-        return Err(Error::Message(
-            "cannot check compaction status of the source worktree against itself".into(),
-        ));
-    }
+    let current = worktree::resolve(worktrees, cwd).ok();
+    let targets = targets_for(cwd, worktrees, args.target.as_ref(), args.all, current)?;
     let mut results = Vec::new();
     for target in targets {
         let located = receipt::read_for(target)?;
@@ -228,18 +211,11 @@ fn run_status(cwd: &Path, worktrees: &[Worktree], args: StatusArgs) -> Result<()
             None => receipt::creation_state(target),
             Some(Err(_)) => ReceiptState::Invalid,
             Some(Ok(value)) => {
-                let reference = format!("{}^{{commit}}", value.receipt.source_branch);
-                let source_commit = git::text(cwd, ["rev-parse", "--verify", reference.as_str()]);
-                match source_commit {
-                    Ok(commit) => {
-                        let state = receipt::state(located.as_ref(), &commit, &target.head);
-                        if state == ReceiptState::Compacted {
-                            let _ = receipt::migrate_legacy(target, value);
-                        }
-                        state
-                    }
-                    Err(_) => ReceiptState::Unknown,
+                let state = receipt::state_for_target(located.as_ref(), target);
+                if state == ReceiptState::Compacted {
+                    let _ = receipt::migrate_legacy(target, value);
                 }
+                state
             }
         };
         let result = StatusResult {

@@ -1,11 +1,16 @@
+use std::os::macos::fs::MetadataExt as _;
 use std::{
     collections::{HashMap, HashSet},
     ffi::{CString, OsStr, OsString},
-    fs, io,
+    fs::{self, OpenOptions},
+    io,
     mem::MaybeUninit,
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        },
     },
     path::{Path, PathBuf},
 };
@@ -200,6 +205,7 @@ pub fn clone_replacing(
     source_root: &Path,
     target_root: &Path,
     relative: &Path,
+    expected_oid: &str,
     sequence: u64,
 ) -> Result<CloneOutcome> {
     let source = source_root.join(relative);
@@ -214,6 +220,52 @@ pub fn clone_replacing(
     };
     if !source_before.file_type().is_file() || !target_before.file_type().is_file() {
         return Ok(CloneOutcome::NotRegular);
+    }
+    let source_fd = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&source)
+    {
+        Ok(file) => file,
+        Err(_) => return Ok(CloneOutcome::NotRegular),
+    };
+    if Identity::from(&source_before) != Identity::from(&source_fd.metadata()?) {
+        return Ok(CloneOutcome::ChangedDuringClone);
+    }
+    if source_before.st_flags() != 0
+        || !super::macos_create::ordinary_attributes(source_fd.as_raw_fd())
+    {
+        return Ok(CloneOutcome::NotRegular);
+    }
+    let mut source_fd = source_fd;
+    if !crate::git::blob_matches(&mut source_fd, expected_oid)? {
+        return Ok(CloneOutcome::NotRegular);
+    }
+    if Identity::from(&source_before) != Identity::from(&source_fd.metadata()?) {
+        return Ok(CloneOutcome::ChangedDuringClone);
+    }
+    let target_fd = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&target)
+    {
+        Ok(file) => file,
+        Err(_) => return Ok(CloneOutcome::ChangedDuringClone),
+    };
+    if Identity::from(&target_before) != Identity::from(&target_fd.metadata()?) {
+        return Ok(CloneOutcome::ChangedDuringClone);
+    }
+    if target_before.st_flags() != 0
+        || !super::macos_create::ordinary_attributes(target_fd.as_raw_fd())
+    {
+        return Ok(CloneOutcome::ChangedDuringClone);
+    }
+    let mut target_fd = target_fd;
+    if !crate::git::blob_matches(&mut target_fd, expected_oid)? {
+        return Ok(CloneOutcome::ChangedDuringClone);
+    }
+    if Identity::from(&target_before) != Identity::from(&target_fd.metadata()?) {
+        return Ok(CloneOutcome::ChangedDuringClone);
     }
 
     let temporary = temporary_path(&target, sequence);

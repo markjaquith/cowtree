@@ -261,7 +261,7 @@ fn finish(timings: Option<&CloneTimings>, phase: ClonePhase, started: Option<Ins
     }
 }
 
-fn ordinary_attributes(fd: libc::c_int) -> bool {
+pub(super) fn ordinary_attributes(fd: libc::c_int) -> bool {
     let size = unsafe { libc::flistxattr(fd, std::ptr::null_mut(), 0, 0) };
     if size < 0 {
         return false;

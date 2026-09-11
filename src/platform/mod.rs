@@ -40,6 +40,7 @@ pub trait ClonePlatform {
         source_root: &Path,
         target_root: &Path,
         relative: &Path,
+        expected_oid: &str,
         sequence: u64,
     ) -> Result<CloneOutcome>;
 }
@@ -156,13 +157,14 @@ impl ClonePlatform for SystemPlatform {
         source_root: &Path,
         target_root: &Path,
         relative: &Path,
+        expected_oid: &str,
         sequence: u64,
     ) -> Result<CloneOutcome> {
         #[cfg(target_os = "macos")]
-        return macos::clone_replacing(source_root, target_root, relative, sequence);
+        return macos::clone_replacing(source_root, target_root, relative, expected_oid, sequence);
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (source_root, target_root, relative, sequence);
+            let _ = (source_root, target_root, relative, expected_oid, sequence);
             Err(crate::error::Error::UnsupportedFilesystem(
                 "cowtree v1 requires macOS on APFS".into(),
             ))

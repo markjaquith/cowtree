@@ -90,7 +90,6 @@ fn retry_removes_only_stale_clone_files_and_dry_run_removes_nothing() {
         &repo,
         &["worktree", "add", "-b", "feature", target.to_str().unwrap()],
     );
-
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -280,6 +279,101 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
 }
 
 #[test]
+fn compaction_uses_multiple_donors_and_source_restricts_them() {
+    let root = tempfile::tempdir().unwrap();
+    if !is_apfs(root.path()) {
+        return;
+    }
+    let repo = root.path().join("repo");
+    let donor_c = root.path().join("donor-c");
+    let target = root.path().join("target");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "--initial-branch=main"]);
+    git(&repo, &["config", "user.email", "cowtree@example.com"]);
+    git(&repo, &["config", "user.name", "cowtree test"]);
+    for file in ["common", "b-file", "c-file"] {
+        fs::write(repo.join(file), format!("{file}\n")).unwrap();
+    }
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "fixture"]);
+    git(&repo, &["switch", "-c", "donor-b"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "donor-c",
+            donor_c.to_str().unwrap(),
+            "main",
+        ],
+    );
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "target",
+            target.to_str().unwrap(),
+            "main",
+        ],
+    );
+    fs::write(repo.join("c-file"), "changed by b\n").unwrap();
+    git(&repo, &["commit", "-am", "change c"]);
+    // A dirty path in the first donor falls through to another matching donor.
+    fs::write(repo.join("common"), "dirty in b\n").unwrap();
+    fs::write(donor_c.join("b-file"), "changed by c\n").unwrap();
+    git(&donor_c, &["commit", "-am", "change b"]);
+
+    let output = compact(&repo, &["compact", target.to_str().unwrap(), "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"][0]["cloned_files"], 3);
+    assert_eq!(json["results"][0]["skipped_divergent_paths"], 0);
+    git(&target, &["diff", "--quiet", "HEAD"]);
+    let receipt =
+        fs::read_to_string(repo.join(".git/worktrees/target/cowtree-compaction")).unwrap();
+    assert!(receipt.contains("target_only=true\n"));
+    assert_eq!(
+        receipt
+            .lines()
+            .find_map(|line| line.strip_prefix("source_commits="))
+            .unwrap()
+            .split(',')
+            .count(),
+        2
+    );
+
+    let restricted = compact(
+        &repo,
+        &[
+            "compact",
+            target.to_str().unwrap(),
+            "--source",
+            "donor-c",
+            "--json",
+        ],
+    );
+    assert!(restricted.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&restricted.stdout).unwrap();
+    assert_eq!(json["results"][0]["cloned_files"], 2);
+    assert_eq!(json["results"][0]["skipped_divergent_paths"], 1);
+    git(&target, &["diff", "--quiet", "HEAD"]);
+
+    fs::write(donor_c.join("c-file"), "donor moved\n").unwrap();
+    git(&donor_c, &["commit", "-am", "move donor"]);
+    let status = compact(&repo, &["status", target.to_str().unwrap(), "--json"]);
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["results"][0]["status"], "compacted");
+}
+
+#[test]
 fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     let root = tempfile::tempdir().unwrap();
     if !is_apfs(root.path()) {
@@ -295,6 +389,7 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     fs::write(repo.join("committed"), "main\n").unwrap();
     fs::write(repo.join("dirty"), "clean\n").unwrap();
     fs::write(repo.join("staged"), "clean\n").unwrap();
+    fs::write(repo.join("hidden"), "clean\n").unwrap();
     // Enough files to exercise the bounded parallel cloning path, with shared
     // ancestors to cover the directory-validation cache as well.
     for directory in 0..16 {
@@ -316,12 +411,20 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
         &repo,
         &["worktree", "add", "-b", "feature", target.to_str().unwrap()],
     );
+    let xattr = Command::new("xattr")
+        .current_dir(&repo)
+        .args(["-w", "user.cowtree-test", "donor-only", "same"])
+        .output()
+        .unwrap();
+    assert!(xattr.status.success());
     fs::write(target.join("committed"), "feature\n").unwrap();
     git(&target, &["add", "committed"]);
     git(&target, &["commit", "-m", "diverge"]);
     fs::write(target.join("dirty"), "dirty\n").unwrap();
     fs::write(target.join("staged"), "staged\n").unwrap();
     git(&target, &["add", "staged"]);
+    git(&target, &["update-index", "--assume-unchanged", "hidden"]);
+    fs::write(target.join("hidden"), "hidden dirty bytes\n").unwrap();
 
     fs::set_permissions(
         target.join("nested/0/1.txt"),
@@ -342,7 +445,12 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     );
     let json: serde_json::Value = serde_json::from_slice(&compact.stdout).unwrap();
     assert_eq!(json["schema_version"], 2);
-    assert_eq!(json["results"][0]["cloned_files"], 1025);
+    assert_eq!(json["results"][0]["cloned_files"], 1024);
+    assert_eq!(json["results"][0]["skipped_changed_paths"], 2);
+    assert_eq!(
+        json["results"][0]["outcome"],
+        "compacted_with_changed_paths_skipped"
+    );
     let after = fs::metadata(target.join("nested/0/0.txt")).unwrap();
     assert_ne!(before.ino(), after.ino());
     assert_eq!(before.mode(), after.mode());
@@ -369,6 +477,16 @@ fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
         "feature\n"
     );
     assert_eq!(fs::read_to_string(target.join("dirty")).unwrap(), "dirty\n");
+    let xattr = Command::new("xattr")
+        .current_dir(&target)
+        .args(["-p", "user.cowtree-test", "same"])
+        .output()
+        .unwrap();
+    assert!(!xattr.status.success());
+    assert_eq!(
+        fs::read_to_string(target.join("hidden")).unwrap(),
+        "hidden dirty bytes\n"
+    );
     assert_eq!(
         fs::read_to_string(target.join("staged")).unwrap(),
         "staged\n"

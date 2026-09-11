@@ -102,6 +102,8 @@ fn valid_oid(oid: &str) -> bool {
 pub struct Receipt {
     pub source_branch: String,
     pub source_commit: String,
+    pub source_commits: Vec<String>,
+    pub target_only: bool,
     pub target_commit: String,
     pub excluded_hash: String,
     pub cloned_files: u64,
@@ -175,9 +177,17 @@ pub fn parse(content: &[u8]) -> Result<Receipt> {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| Error::Message(format!("receipt is missing {key}")))
     };
+    let source_branch = required("source_branch")?.to_owned();
+    let source_commit = required("source_commit")?.to_owned();
+    let source_commits = fields.get("source_commits").map_or_else(
+        || vec![source_commit.clone()],
+        |value| value.split(',').map(str::to_owned).collect(),
+    );
     Ok(Receipt {
-        source_branch: required("source_branch")?.to_owned(),
-        source_commit: required("source_commit")?.to_owned(),
+        source_branch,
+        source_commit,
+        source_commits,
+        target_only: fields.get("target_only") == Some(&"true"),
         target_commit: required("target_commit")?.to_owned(),
         excluded_hash: required("excluded_hash")?.to_owned(),
         cloned_files: required("cloned_files")?
@@ -214,6 +224,17 @@ pub fn write(worktree: &Worktree, receipt: &Receipt) -> Result<()> {
         receipt.excluded_hash,
         receipt.cloned_files,
     );
+    if receipt.target_only {
+        body.push_str("target_only=true\n");
+    }
+    if !receipt.source_commits.is_empty()
+        && receipt.source_commits != [receipt.source_commit.clone()]
+    {
+        body.push_str(&format!(
+            "source_commits={}\n",
+            receipt.source_commits.join(",")
+        ));
+    }
     if let Some(bytes) = receipt.eligible_allocated_bytes {
         body.push_str(&format!("eligible_allocated_bytes={bytes}\n"));
     }
@@ -255,6 +276,7 @@ pub fn now() -> Result<String> {
         .map_err(|error| Error::Message(error.to_string()))
 }
 
+#[cfg(test)]
 pub fn state(
     located: Option<&std::result::Result<LocatedReceipt, Error>>,
     source_commit: &str,
@@ -264,12 +286,32 @@ pub fn state(
         None => ReceiptState::NotCompacted,
         Some(Err(_)) => ReceiptState::Invalid,
         Some(Ok(value))
-            if value.receipt.source_commit == source_commit
-                && value.receipt.target_commit == target_commit =>
+            if value.receipt.target_commit == target_commit
+                && (value.receipt.target_only || value.receipt.source_commit == source_commit) =>
         {
             ReceiptState::Compacted
         }
         Some(Ok(_)) => ReceiptState::Stale,
+    }
+}
+
+pub fn state_for_target(
+    located: Option<&std::result::Result<LocatedReceipt, Error>>,
+    target: &Worktree,
+) -> ReceiptState {
+    match located {
+        None => ReceiptState::NotCompacted,
+        Some(Err(_)) => ReceiptState::Invalid,
+        Some(Ok(located)) if located.receipt.target_commit != target.head => ReceiptState::Stale,
+        Some(Ok(located)) if located.receipt.target_only => ReceiptState::Compacted,
+        Some(Ok(located)) => {
+            let reference = format!("refs/heads/{}^{{commit}}", located.receipt.source_branch);
+            match git::text(&target.path, ["rev-parse", "--verify", &reference]) {
+                Ok(commit) if commit == located.receipt.source_commit => ReceiptState::Compacted,
+                Ok(_) => ReceiptState::Stale,
+                Err(_) => ReceiptState::Unknown,
+            }
+        }
     }
 }
 
@@ -284,6 +326,8 @@ mod tests {
         let value = parse(LEGACY).unwrap();
         assert_eq!(value.cloned_files, 4);
         assert_eq!(value.eligible_allocated_bytes, None);
+        assert_eq!(value.source_commits, ["abc"]);
+        assert!(!value.target_only);
     }
 
     #[test]
@@ -300,5 +344,18 @@ mod tests {
         assert_eq!(state(Some(&located), "abc", "def"), ReceiptState::Compacted);
         assert_eq!(state(Some(&located), "new", "def"), ReceiptState::Stale);
         assert_eq!(state(None, "abc", "def"), ReceiptState::NotCompacted);
+
+        let mut target_only = parse(LEGACY).unwrap();
+        target_only.target_only = true;
+        target_only.source_commits = vec!["abc".into(), "ghi".into()];
+        let located = Ok(LocatedReceipt {
+            receipt: target_only,
+            legacy: false,
+        });
+        assert_eq!(
+            state(Some(&located), "moved", "def"),
+            ReceiptState::Compacted
+        );
+        assert_eq!(state(Some(&located), "abc", "moved"), ReceiptState::Stale);
     }
 }

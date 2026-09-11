@@ -70,14 +70,15 @@ def benchmark(args, root):
                 compacted = args.worktrees if phase == "compact" else 0
                 expected = {
                     "compacted": compacted,
-                    "skipped": args.worktrees - compacted,
+                    "already_compacted": args.worktrees - compacted,
+                    "dry_run": 0,
                     "failed": 0,
                 }
                 results = result["results"]
                 if result["summary"] != expected or len(results) != args.worktrees:
                     raise RuntimeError(f"Unexpected batch result: {result}")
                 expected_files = args.files if phase == "compact" else 0
-                if any(item["cloned_files"] != expected_files for item in results):
+                if any(item.get("cloned_files", 0) != expected_files for item in results):
                     raise RuntimeError(f"Unexpected clone counts: {result}")
             print(json.dumps({
                 "binary": str(binary), "trial": trial, "files": args.files,

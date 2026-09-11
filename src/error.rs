@@ -12,12 +12,6 @@ pub enum Error {
     WorktreeNotFound(String),
     #[error("ambiguous worktree: {0}")]
     AmbiguousWorktree(String),
-    #[error("source worktree is detached; select a checked-out source branch")]
-    DetachedSource,
-    #[error("source worktree HEAD does not match {0}")]
-    SourceHeadMismatch(String),
-    #[error("source worktree has staged or unstaged tracked changes: {0}")]
-    DirtySource(PathBuf),
     #[error("source and target are not on the same filesystem volume")]
     CrossVolume,
     #[error("filesystem is not supported: {0}")]

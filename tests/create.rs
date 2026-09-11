@@ -103,8 +103,11 @@ fn add_is_a_top_level_command_and_git_is_not_shadowed() {
 }
 
 #[test]
-fn compact_explains_that_the_default_source_must_be_checked_out() {
+fn compact_uses_other_worktrees_when_main_is_not_checked_out() {
     let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
     let target = f.target("target");
     git(
         &f.repo,
@@ -112,12 +115,8 @@ fn compact_explains_that_the_default_source_must_be_checked_out() {
     );
     git(&f.repo, &["switch", "-c", "active"]);
     let output = f.cow(&["compact", target.to_str().unwrap(), "--dry-run"]);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(
-            "default source branch 'main' is not checked out; create a worktree for it or pass --source <checked-out-branch-or-path>"
-        )
-    );
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("would compact target"));
 }
 
 #[test]
@@ -173,11 +172,8 @@ fn clone_first_is_clean_and_independent_and_has_creation_status() {
     )));
 
     let source_status = f.cow(&["status"]);
-    assert!(!source_status.status.success());
-    assert!(
-        String::from_utf8_lossy(&source_status.stderr)
-            .contains("cannot check compaction status of the source worktree against itself")
-    );
+    success(&source_status);
+    assert!(String::from_utf8_lossy(&source_status.stdout).contains("not compacted"));
 
     let all = f.cow(&["status", "--all", "--json"]);
     success(&all);

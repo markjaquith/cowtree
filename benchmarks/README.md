@@ -173,6 +173,24 @@ potentially already-shared extents, not cold-disk measurements or estimates of
 physical savings. Compare medians on an otherwise idle machine and record the
 filesystem, hardware, fixture size, and number of rounds with results.
 
+### Multi-donor compaction measurement: September 11, 2026
+
+Multi-donor compaction inventories every other registered worktree, matches
+paths by blob ID, and hashes both donor and target bytes before replacing the
+target file. Compared with the former single-source path on an Apple M4 Pro,
+macOS 26.6.2, APFS, and Git 2.55.0, using three alternating rounds over 20,000
+files in each of three targets:
+
+| Version                  | Compact all median | Skip all median |
+| ------------------------ | -----------------: | --------------: |
+| Single-source baseline   |            12.11 s |         0.117 s |
+| Multi-donor verification |            14.81 s |         0.056 s |
+
+The stronger per-file byte and metadata verification plus donor inventory added
+about 22% to a full compaction. Target-only receipt freshness made the no-op
+receipt path about 52% faster because it no longer resolves and validates a
+designated source.
+
 ## Reference measurement
 
 On an Apple M1 Max (10 logical CPUs, 64 GiB RAM), macOS 15.4.1, APFS:
