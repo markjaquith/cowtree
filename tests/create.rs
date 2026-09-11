@@ -846,7 +846,18 @@ fn user_extended_attributes_are_not_copied() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn directory_clone_rejects_donor_xattrs_and_untracked_entries() {
+fn directory_clone_rejects_donor_xattrs() {
+    directory_clone_falls_back_for("xattr");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn directory_clone_rejects_untracked_entries() {
+    directory_clone_falls_back_for("untracked");
+}
+
+#[cfg(target_os = "macos")]
+fn directory_clone_falls_back_for(reason: &str) {
     let f = Fixture::new();
     if !apfs(&f.repo) {
         return;
@@ -859,17 +870,20 @@ fn directory_clone_rejects_donor_xattrs_and_untracked_entries() {
     }
     git(&f.repo, &["add", "."]);
     git(&f.repo, &["commit", "-qm", "bulk subtree"]);
-    success(
-        &command(&f.repo, "xattr")
-            .args(["-w", "user.cowtree-test", "donor-only", "bulk/0"])
-            .output()
-            .unwrap(),
-    );
-    fs::write(directory.join("generated"), "donor-only\n").unwrap();
+    if reason == "xattr" {
+        success(
+            &command(&f.repo, "xattr")
+                .args(["-w", "user.cowtree-test", "donor-only", "bulk/0"])
+                .output()
+                .unwrap(),
+        );
+    } else {
+        fs::write(directory.join("generated"), "donor-only\n").unwrap();
+    }
     let output = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
         .env("COWTREE_TIMING", "1")
         .args(["add", "--detach"])
-        .arg(f.target("metadata-fallback"))
+        .arg(f.target(reason))
         .output()
         .unwrap();
     success(&output);
@@ -878,7 +892,7 @@ fn directory_clone_rejects_donor_xattrs_and_untracked_entries() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let target = f.target("metadata-fallback");
+    let target = f.target(reason);
     assert!(!target.join("bulk/generated").exists());
     assert!(fs::read_dir(&target).unwrap().all(|entry| {
         !entry
@@ -887,11 +901,13 @@ fn directory_clone_rejects_donor_xattrs_and_untracked_entries() {
             .to_string_lossy()
             .starts_with(".cowtree-directory.")
     }));
-    let xattr = command(&target, "xattr")
-        .args(["-p", "user.cowtree-test", "bulk/0"])
-        .output()
-        .unwrap();
-    assert!(!xattr.status.success());
+    if reason == "xattr" {
+        let xattr = command(&target, "xattr")
+            .args(["-p", "user.cowtree-test", "bulk/0"])
+            .output()
+            .unwrap();
+        assert!(!xattr.status.success());
+    }
     assert!(git(&target, &["status", "--porcelain"]).is_empty());
 }
 

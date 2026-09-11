@@ -149,6 +149,46 @@ Raising the directory-worker cap to eight produced a further paired improvement
 from 2.86 seconds to 2.56 seconds (10.4%), and from 2.91 seconds to 2.62 seconds
 (10.1%) through status. Every version verified 18,000 clones.
 
+### Stat-populated index prototype: September 11, 2026
+
+**Decision: do not ship.** The prototype's measurable small-file gain did not
+justify adding a bespoke Git index parser and its compatibility and recovery
+risks. The design was credited to Josh Bleecher Snyder's MIT-licensed
+[`git-cow-worktree`](https://github.com/josharian/git-cow-worktree), especially
+its stat-populated index work. Cowtree does not generate a replacement index: it
+patches only the fixed stat fields of verified regular-file entries in the fresh
+index produced by `read-tree`, preserving paths, OIDs, modes, flags, and
+optional extensions byte-for-byte and recomputing the SHA-1 or SHA-256 index
+checksum. Git's existing `update-index --refresh` still runs afterward.
+
+On an Apple M4 Pro, macOS 26.6.2, APFS, and Git 2.55.0, three alternating paired
+warm rounds produced:
+
+| Fixture                       | Baseline | Prototype | Change | Through first status |
+| ----------------------------- | -------: | --------: | -----: | -------------------: |
+| 20,000 × 4 KiB, 10% divergent |  2.679 s |   2.367 s | -11.6% |    2.735 s → 2.423 s |
+| 1,000 × 1 MiB, 10% divergent  |  2.499 s |   2.392 s |  -4.3% |    2.520 s → 2.430 s |
+
+For the 20,000-file fixture, 18,000 entries were populated. The median index
+patch took 80 ms and the median subsequent refresh fell from 950 ms to 314 ms.
+The remaining 2,000 Git-materialized paths were deliberately left with empty
+stat data. For the 1 MiB fixture, all runs remained near 1.47 seconds in
+refresh: files created in the index timestamp's racy window can still be hashed
+by Git despite exact stat data, so this optimization does not eliminate racy-Git
+costs.
+
+The prototype supported expanded index versions 2–4, SHA-1 and SHA-256 object
+formats, arbitrary byte paths, and optional extensions. Sparse checkout is an
+unconditional fallback. Split indexes, sparse-index `sdir`, unknown required
+extensions, malformed entries, checksum mismatches, and mode or OID mismatches
+also used the existing Git refresh path. Installation used `index.lock` and
+rename. If Git rejected an installed patch, Cowtree restored it only when the
+index still exactly matches Cowtree's bytes, rebuilds it with `read-tree`, and
+retried the existing refresh without discarding verified clones. The
+implementation was removed because parser compatibility with future required
+index extensions remained a risk, while gains were limited for racy-timestamp
+and payload-dominated shapes.
+
 ### Creation reference measurements: September 10, 2026
 
 Apple M1 Max (10 logical CPUs, 64 GiB RAM), macOS 15.4.1, APFS, Git 2.45.0;

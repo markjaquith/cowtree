@@ -455,4 +455,81 @@ mod tests {
         );
         assert_eq!(platform.calls[0].load(Ordering::Relaxed), 1);
     }
+
+    struct FallbackPlatform {
+        first_calls: Vec<AtomicUsize>,
+        second_calls: Vec<AtomicUsize>,
+    }
+
+    impl ClonePlatform for FallbackPlatform {
+        fn validate(&self, _: &Path, _: &Path) -> Result<()> {
+            Ok(())
+        }
+
+        fn clone_replacing(
+            &self,
+            source: &Path,
+            _: &Path,
+            relative: &Path,
+            _: &str,
+            sequence: u64,
+        ) -> Result<CloneOutcome> {
+            let index: usize = relative.to_str().unwrap().parse().unwrap();
+            assert_eq!(sequence as usize, index);
+            if source == Path::new("first") {
+                self.first_calls[index].fetch_add(1, Ordering::Relaxed);
+                Ok(CloneOutcome::NotRegular)
+            } else {
+                assert_eq!(source, Path::new("second"));
+                self.second_calls[index].fetch_add(1, Ordering::Relaxed);
+                Ok(CloneOutcome::Cloned)
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_clones_fall_through_donors_and_record_the_successful_source() {
+        let paths: Vec<_> = (0..1025).map(|i| PathBuf::from(i.to_string())).collect();
+        let platform = FallbackPlatform {
+            first_calls: (0..paths.len()).map(|_| AtomicUsize::new(0)).collect(),
+            second_calls: (0..paths.len()).map(|_| AtomicUsize::new(0)).collect(),
+        };
+        let first = Worktree {
+            path: PathBuf::from("first"),
+            head: "first-commit".into(),
+            branch: None,
+            locked: false,
+        };
+        let second = Worktree {
+            path: PathBuf::from("second"),
+            head: "second-commit".into(),
+            branch: None,
+            locked: false,
+        };
+        let jobs: Vec<_> = paths
+            .iter()
+            .map(|path| CloneJob {
+                path: path.clone(),
+                oid: String::new(),
+                donors: vec![&first, &second],
+            })
+            .collect();
+
+        let result = clone_paths_with_workers(&platform, Path::new("target"), &jobs, 4).unwrap();
+
+        assert_eq!((result.0, result.1), (1025, 0));
+        assert_eq!(result.2, HashSet::from(["second-commit".into()]));
+        assert!(
+            platform
+                .first_calls
+                .iter()
+                .all(|count| count.load(Ordering::Relaxed) == 1)
+        );
+        assert!(
+            platform
+                .second_calls
+                .iter()
+                .all(|count| count.load(Ordering::Relaxed) == 1)
+        );
+    }
 }

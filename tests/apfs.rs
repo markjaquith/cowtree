@@ -69,9 +69,7 @@ fn compact(repo: &Path, args: &[&str]) -> std::process::Output {
 #[test]
 fn retry_removes_only_stale_clone_files_and_dry_run_removes_nothing() {
     let root = tempfile::tempdir().unwrap();
-    if !is_apfs(root.path()) {
-        return;
-    }
+    assert!(is_apfs(root.path()), "macOS CI must exercise APFS tests");
     let repo = root.path().join("repo");
     let target = root.path().join("feature");
     fs::create_dir(&repo).unwrap();
@@ -153,9 +151,7 @@ fn retry_removes_only_stale_clone_files_and_dry_run_removes_nothing() {
 #[test]
 fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
     let root = tempfile::tempdir().unwrap();
-    if !is_apfs(root.path()) {
-        return;
-    }
+    assert!(is_apfs(root.path()), "macOS CI must exercise APFS tests");
     let repo = root.path().join("repo");
     fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "--initial-branch=main"]);
@@ -305,9 +301,7 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
 #[test]
 fn compaction_uses_multiple_donors_and_source_restricts_them() {
     let root = tempfile::tempdir().unwrap();
-    if !is_apfs(root.path()) {
-        return;
-    }
+    assert!(is_apfs(root.path()), "macOS CI must exercise APFS tests");
     let repo = root.path().join("repo");
     let donor_c = root.path().join("donor-c");
     let target = root.path().join("target");
@@ -400,9 +394,7 @@ fn compaction_uses_multiple_donors_and_source_restricts_them() {
 #[test]
 fn preserves_divergent_and_dirty_paths_and_writes_receipt() {
     let root = tempfile::tempdir().unwrap();
-    if !is_apfs(root.path()) {
-        return;
-    }
+    assert!(is_apfs(root.path()), "macOS CI must exercise APFS tests");
     let repo = root.path().join("repo");
     let target = root.path().join("feature");
     fs::create_dir(&repo).unwrap();

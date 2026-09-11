@@ -653,6 +653,45 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_directory_clone_is_removed_without_publishing() {
+        let root = tempfile::tempdir().unwrap();
+        if SystemPlatform.validate(root.path(), root.path()).is_err() {
+            return;
+        }
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir_all(source.join("dir")).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(source.join("dir/file"), "data").unwrap();
+        let entry = crate::git::TreeEntry {
+            path: PathBuf::from("dir/file"),
+            oid: format!("{:x}", sha1::Sha1::digest(b"blob 4\0data")),
+            executable: false,
+            regular: true,
+            gitlink: false,
+            tree: false,
+        };
+        let cancelled = AtomicUsize::new(1);
+
+        let error = match clone_directory_new(
+            &source,
+            &target,
+            Path::new("dir"),
+            &[&entry],
+            0o022,
+            0,
+            &cancelled,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("cancelled directory clone unexpectedly succeeded"),
+        };
+
+        assert_eq!(error.to_string(), "worktree creation interrupted");
+        assert!(!target.join("dir").exists());
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    #[test]
     fn destination_symlink_ancestor_cannot_escape() {
         let root = tempfile::tempdir().unwrap();
         if SystemPlatform.validate(root.path(), root.path()).is_err() {

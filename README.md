@@ -64,12 +64,13 @@ back to an ordinary checkout.
 > them during compaction. Cowtree detects most concurrent changes and skips
 > affected files, but a small unavoidable race window remains.
 
-Compaction automatically finds matching files in every other registered
-worktree on the same APFS volume. Donors may be on different branches or commits;
-Cowtree matches paths by Git blob ID and verifies their materialized bytes before
-cloning. Use `--source` to restrict donors to one checked-out branch or worktree.
-Multi-donor receipts remain current while the target commit is unchanged;
-moving or deleting a donor does not invalidate existing shared blocks.
+Compaction automatically finds matching files in every other registered worktree
+on the same APFS volume. Donors may be on different branches or commits; Cowtree
+matches paths by Git blob ID and verifies their materialized bytes before
+cloning. Use `--source` to restrict donors to one checked-out branch or
+worktree. Multi-donor receipts remain current while the target commit is
+unchanged; moving or deleting a donor does not invalidate existing shared
+blocks.
 
 `--all` skips worktrees with current compaction receipts. `--dry-run` reports
 eligible files and attributed storage without modifying anything. Use
