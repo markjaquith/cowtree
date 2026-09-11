@@ -198,3 +198,35 @@ did not translate into a demonstrated wall-clock improvement.
 The implementation and its specific tests were removed; this record is retained
 to avoid repeating the experiment without new evidence. The experimental code
 remains available in commit `4ca4fca`.
+
+## Rejected recursive clone-and-reset experiment: September 10, 2026
+
+**Decision: do not replace clone-first creation with recursive cloning followed
+by `git reset --hard`.** It was slower on the representative small-file shape,
+even when the donor and target commits were identical.
+
+The prototype registered a no-checkout worktree, used macOS `cp -cR` to clone
+the donor hierarchy except `.git`, then ran `git reset --hard` in the target.
+One version used a single recursive clone; another split the top-level entries
+across four concurrent recursive clones. Both produced clean worktrees.
+
+On an Apple M4 Pro, macOS 26.6.2, APFS, and Git 2.55.0, with 20,000 identical
+4 KiB files and three alternating rounds:
+
+| Method                              | Median command time |
+| ----------------------------------- | ------------------: |
+| Existing four-worker clone-first add |              5.13 s |
+| Four concurrent recursive clones + reset |          6.14 s |
+
+The concurrent recursive approach was about 20% slower. A separate serial run
+measured 7.47 s versus 5.05 s for clone-first. With 10% commit divergence, the
+serial approach measured 7.57 s versus 4.88 s. A 1,000-file, two-round trial
+favored recursive clone-and-reset (0.40 s versus 0.54 s), but that narrower
+shape did not justify a more complex fast path that also needs special handling
+for untracked files, ignored files, metadata, sparse checkouts, filters, and
+submodules.
+
+Recursive cloning still traverses every entry, does so serially within each
+hierarchy, and then makes Git traverse the result again during reset. Splitting
+top-level directories recovered some time but did not outperform the existing
+parallel per-file implementation.
