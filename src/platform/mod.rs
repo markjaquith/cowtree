@@ -15,6 +15,13 @@ pub use macos::CloneOutcome;
 #[cfg(target_os = "macos")]
 pub use macos_create::CloneDirectoryCache;
 
+pub type FileIdentity = (u64, u64, u64, i64, i64, i64, i64);
+
+pub struct ClonedDirectory {
+    pub files: Vec<(PathBuf, FileIdentity)>,
+    pub directories: Vec<(PathBuf, (u64, u64))>,
+}
+
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
 pub enum CloneOutcome {
@@ -139,6 +146,26 @@ pub fn clone_new(
         Err(crate::error::Error::UnsupportedFilesystem(
             "creation requires macOS on APFS".into(),
         ))
+    }
+}
+
+pub fn clone_directory_new(
+    source: &Path,
+    target: &Path,
+    relative: &Path,
+    entries: &[&crate::git::TreeEntry],
+    mask: u32,
+    sequence: u64,
+    cancelled: &std::sync::atomic::AtomicUsize,
+) -> Result<Option<ClonedDirectory>> {
+    #[cfg(target_os = "macos")]
+    return macos_create::clone_directory_new(
+        source, target, relative, entries, mask, sequence, cancelled,
+    );
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (source, target, relative, entries, mask, sequence, cancelled);
+        Ok(None)
     }
 }
 

@@ -215,6 +215,85 @@ fn creation_timing_is_opt_in() {
 }
 
 #[test]
+fn identical_large_subtree_uses_directory_clone() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    let directory = f.repo.join("bulk");
+    fs::create_dir(&directory).unwrap();
+    for index in 0..40 {
+        fs::write(
+            directory.join(index.to_string()),
+            format!("payload {index}\n"),
+        )
+        .unwrap();
+    }
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-qm", "bulk subtree"]);
+    let output = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
+        .env("COWTREE_TIMING", "1")
+        .args(["add", "--detach"])
+        .arg(f.target("directory-clone"))
+        .output()
+        .unwrap();
+    success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("directory clones: 1/1"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(git(&f.target("directory-clone"), &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn directory_clone_normalizes_modes_like_native_checkout() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    let directory = f.repo.join("bulk");
+    fs::create_dir(&directory).unwrap();
+    for index in 0..40 {
+        fs::write(directory.join(index.to_string()), "payload\n").unwrap();
+    }
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-qm", "bulk subtree"]);
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    for index in 0..40 {
+        fs::set_permissions(
+            directory.join(index.to_string()),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    success(
+        &command(&f.repo, "git")
+            .args(["worktree", "add", "--detach"])
+            .arg(f.target("native-modes"))
+            .output()
+            .unwrap(),
+    );
+    success(&f.add("cow-modes", &["--detach"]));
+    for relative in ["bulk".to_owned()]
+        .into_iter()
+        .chain((0..40).map(|index| format!("bulk/{index}")))
+    {
+        assert_eq!(
+            fs::metadata(f.target("cow-modes").join(&relative))
+                .unwrap()
+                .mode()
+                & 0o7777,
+            fs::metadata(f.target("native-modes").join(&relative))
+                .unwrap()
+                .mode()
+                & 0o7777,
+            "{relative}"
+        );
+    }
+}
+
+#[test]
 fn divergent_commit_dirty_source_modes_symlinks_and_weird_names() {
     let f = Fixture::new();
     if !apfs(&f.repo) {
@@ -763,6 +842,57 @@ fn user_extended_attributes_are_not_copied() {
         .output()
         .unwrap();
     assert!(!output.status.success());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn directory_clone_rejects_donor_xattrs_and_untracked_entries() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    fs::write(f.repo.join(".gitignore"), "bulk/generated\n").unwrap();
+    let directory = f.repo.join("bulk");
+    fs::create_dir(&directory).unwrap();
+    for index in 0..40 {
+        fs::write(directory.join(index.to_string()), "payload\n").unwrap();
+    }
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-qm", "bulk subtree"]);
+    success(
+        &command(&f.repo, "xattr")
+            .args(["-w", "user.cowtree-test", "donor-only", "bulk/0"])
+            .output()
+            .unwrap(),
+    );
+    fs::write(directory.join("generated"), "donor-only\n").unwrap();
+    let output = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
+        .env("COWTREE_TIMING", "1")
+        .args(["add", "--detach"])
+        .arg(f.target("metadata-fallback"))
+        .output()
+        .unwrap();
+    success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("directory clones: 0/1"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let target = f.target("metadata-fallback");
+    assert!(!target.join("bulk/generated").exists());
+    assert!(fs::read_dir(&target).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".cowtree-directory.")
+    }));
+    let xattr = command(&target, "xattr")
+        .args(["-p", "user.cowtree-test", "bulk/0"])
+        .output()
+        .unwrap();
+    assert!(!xattr.status.success());
+    assert!(git(&target, &["status", "--porcelain"]).is_empty());
 }
 
 #[test]

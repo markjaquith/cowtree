@@ -25,7 +25,7 @@ use crate::{
     receipt, worktree,
 };
 
-type Identity = (u64, u64, u64, i64, i64, i64, i64);
+type Identity = platform::FileIdentity;
 
 struct Timings {
     enabled: bool,
@@ -84,6 +84,7 @@ struct Creation<'a> {
     admin: PathBuf,
     owned: HashMap<PathBuf, Identity>,
     directories: HashMap<PathBuf, (u64, u64)>,
+    directory_clones: HashMap<PathBuf, HashSet<PathBuf>>,
     original_directory: Option<fs::Permissions>,
     materializing: bool,
     complete: bool,
@@ -258,6 +259,7 @@ pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
             admin,
             owned: HashMap::new(),
             directories: HashMap::from([(PathBuf::new(), (meta.dev(), meta.ino()))]),
+            directory_clones: HashMap::new(),
             original_directory,
             materializing: false,
             complete: false,
@@ -297,10 +299,11 @@ fn populate(
     let path = creation.path.clone();
     let commit = git.text(&path, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     git.bytes(&path, &["read-tree", "--reset", &commit], None)?;
-    let entries = tree(git.bytes(&path, &["ls-tree", "-r", "-z", &commit], None)?)?;
+    let entries = tree(git.bytes(&path, &["ls-tree", "-r", "-t", "-z", &commit], None)?)?;
+    let leaves: Vec<_> = entries.iter().filter(|entry| !entry.tree).collect();
     let sparse = config_bool(git, &path, "core.sparseCheckout")?;
     let included: HashSet<PathBuf> = if sparse {
-        let input = paths(entries.iter().map(|entry| entry.path.as_path()));
+        let input = paths(leaves.iter().map(|entry| entry.path.as_path()));
         let matched = git.bytes(
             &path,
             &["sparse-checkout", "check-rules", "-z"],
@@ -310,10 +313,10 @@ fn populate(
             .map(|raw| PathBuf::from(OsString::from_vec(raw.to_vec())))
             .collect()
     } else {
-        entries.iter().map(|entry| entry.path.clone()).collect()
+        leaves.iter().map(|entry| entry.path.clone()).collect()
     };
     let omitted = paths(
-        entries
+        leaves
             .iter()
             .filter(|entry| !included.contains(&entry.path))
             .map(|entry| entry.path.as_path()),
@@ -326,9 +329,10 @@ fn populate(
         )?;
     }
     timings.mark("prepare target index");
-    let wanted: Vec<_> = entries
+    let wanted: Vec<_> = leaves
         .iter()
         .filter(|entry| included.contains(&entry.path))
+        .copied()
         .collect();
     if !wanted.is_empty() {
         SystemPlatform.validate(&path, &path)?;
@@ -348,7 +352,11 @@ fn populate(
         if source.path == path || SystemPlatform.validate(&source.path, &path).is_err() {
             continue;
         }
-        let Ok(raw) = git.bytes(&source.path, &["ls-tree", "-r", "-z", &source.head], None) else {
+        let Ok(raw) = git.bytes(
+            &source.path,
+            &["ls-tree", "-r", "-t", "-z", &source.head],
+            None,
+        ) else {
             continue;
         };
         let entries = tree(raw)?
@@ -358,10 +366,26 @@ fn populate(
         inventories.push((source, entries));
     }
     timings.mark("inventory donor trees");
+    let directory_jobs = plan_directory_jobs(&entries, &wanted, &safe_attributes, &inventories);
+    for job in &directory_jobs {
+        creation.parents(&job.path)?;
+    }
+    let (directory_clones, mut provenance, cloned_directories) =
+        seed_directory_jobs(creation, &directory_jobs, mask)?;
+    if timings.enabled {
+        eprintln!(
+            "cowtree timing: directory clones: {cloned_directories}/{}",
+            directory_jobs.len()
+        );
+    }
+    timings.mark("verify and clone directories");
     let mut jobs = Vec::new();
     for entry in &wanted {
         creation.check_cancelled()?;
-        if !entry.regular || !safe_attributes.contains(&entry.path) {
+        if !entry.regular
+            || !safe_attributes.contains(&entry.path)
+            || directory_clones.contains(&entry.path)
+        {
             continue;
         }
         let donors: Vec<_> = inventories
@@ -379,7 +403,11 @@ fn populate(
         }
     }
     timings.mark("plan clone jobs");
-    let (cloned, provenance, clone_timings) = seed_jobs(creation, &jobs, mask, timings.enabled)?;
+    let (file_clones, file_provenance, clone_timings) =
+        seed_jobs(creation, &jobs, mask, timings.enabled)?;
+    provenance.extend(file_provenance);
+    let mut cloned: Vec<_> = directory_clones.into_iter().collect();
+    cloned.extend(file_clones);
     timings.mark("verify and clone files");
     for (label, duration) in clone_timings {
         timings.worker_time(label, duration);
@@ -434,6 +462,14 @@ fn populate(
             return Err(Error::Message(format!(
                 "seeded clone changed during Git materialization: {}",
                 seed.display()
+            )));
+        }
+    }
+    for (root, expected) in &creation.directory_clones {
+        if !directory_is_exact(&path, root, expected)? {
+            return Err(Error::Message(format!(
+                "directory clone changed during Git materialization: {}",
+                root.display()
             )));
         }
     }
@@ -519,6 +555,57 @@ fn paths<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<u8> {
     result
 }
 
+fn directory_is_exact(
+    worktree: &Path,
+    root: &Path,
+    expected_files: &HashSet<PathBuf>,
+) -> Result<bool> {
+    let mut expected_directories = HashSet::from([root.to_owned()]);
+    for file in expected_files {
+        if !file.starts_with(root) {
+            return Ok(false);
+        }
+        let mut parent = file.parent();
+        while let Some(directory) = parent {
+            expected_directories.insert(directory.to_owned());
+            if directory == root {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    let mut actual_files = HashSet::new();
+    let mut actual_directories = HashSet::new();
+    collect_directory_paths(worktree, root, &mut actual_files, &mut actual_directories)?;
+    Ok(actual_files == *expected_files && actual_directories == expected_directories)
+}
+
+fn collect_directory_paths(
+    worktree: &Path,
+    relative: &Path,
+    files: &mut HashSet<PathBuf>,
+    directories: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    let path = worktree.join(relative);
+    if !fs::symlink_metadata(&path)?.file_type().is_dir() {
+        return Err(Error::UnsafePath(relative.to_owned()));
+    }
+    directories.insert(relative.to_owned());
+    for item in fs::read_dir(path)? {
+        let item = item?;
+        let child = relative.join(item.file_name());
+        let kind = item.file_type()?;
+        if kind.is_dir() {
+            collect_directory_paths(worktree, &child, files, directories)?;
+        } else if kind.is_file() {
+            files.insert(child);
+        } else {
+            return Err(Error::UnsafePath(child));
+        }
+    }
+    Ok(())
+}
+
 fn config(git: &Git, path: &Path, key: &str) -> Result<String> {
     let output = git.at(path).args(["config", "--get", key]).output()?;
     if output.status.success() {
@@ -601,6 +688,184 @@ fn checkout_safe(git: &Git, path: &Path, entries: &[&Entry]) -> Result<HashSet<P
         }
     }
     Ok(safe)
+}
+
+const MIN_DIRECTORY_CLONE_FILES: usize = 32;
+
+struct DirectorySeedJob<'entry, 'donor> {
+    path: PathBuf,
+    entries: Vec<&'entry Entry>,
+    donors: Vec<&'donor worktree::Worktree>,
+}
+
+fn plan_directory_jobs<'entry, 'donor>(
+    entries: &'entry [Entry],
+    wanted: &[&Entry],
+    safe_attributes: &HashSet<PathBuf>,
+    inventories: &'donor [(&'donor worktree::Worktree, HashMap<PathBuf, Entry>)],
+) -> Vec<DirectorySeedJob<'entry, 'donor>> {
+    let wanted: HashSet<_> = wanted.iter().map(|entry| entry.path.as_path()).collect();
+    let mut directories: Vec<_> = entries.iter().filter(|entry| entry.tree).collect();
+    directories.sort_by_key(|entry| (entry.path.components().count(), entry.path.clone()));
+    let mut descendants: HashMap<PathBuf, Vec<&Entry>> = directories
+        .iter()
+        .map(|entry| (entry.path.clone(), Vec::new()))
+        .collect();
+    for entry in entries.iter().filter(|entry| !entry.tree) {
+        let mut parent = entry.path.parent();
+        while let Some(directory) = parent {
+            if let Some(children) = descendants.get_mut(directory) {
+                children.push(entry);
+            }
+            parent = directory.parent();
+        }
+    }
+    let mut selected = HashSet::<PathBuf>::new();
+    let mut jobs = Vec::new();
+    for directory in directories {
+        let mut ancestor = directory.path.parent();
+        let mut covered = false;
+        while let Some(path) = ancestor {
+            if selected.contains(path) {
+                covered = true;
+                break;
+            }
+            ancestor = path.parent();
+        }
+        if covered {
+            continue;
+        }
+        let children = &descendants[&directory.path];
+        if children.len() < MIN_DIRECTORY_CLONE_FILES
+            || children.iter().any(|entry| {
+                !entry.regular
+                    || !wanted.contains(entry.path.as_path())
+                    || !safe_attributes.contains(&entry.path)
+            })
+        {
+            continue;
+        }
+        let donors: Vec<_> = inventories
+            .iter()
+            .filter_map(|(source, inventory)| {
+                inventory
+                    .get(&directory.path)
+                    .filter(|candidate| candidate.tree && candidate.oid == directory.oid)
+                    .map(|_| *source)
+            })
+            .collect();
+        if donors.is_empty() {
+            continue;
+        }
+        selected.insert(directory.path.clone());
+        jobs.push(DirectorySeedJob {
+            path: directory.path.clone(),
+            entries: children.clone(),
+            donors,
+        });
+    }
+    jobs
+}
+
+fn seed_directory_jobs(
+    creation: &mut Creation<'_>,
+    jobs: &[DirectorySeedJob<'_, '_>],
+    mask: u32,
+) -> Result<(HashSet<PathBuf>, HashSet<String>, usize)> {
+    if jobs.is_empty() {
+        return Ok((HashSet::new(), HashSet::new(), 0));
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(4)
+        .min(jobs.len());
+    let chunk_size = jobs.len().div_ceil(workers);
+    let stopped = AtomicBool::new(false);
+    let target = &creation.path;
+    let signal = &creation.cancelled;
+    let clone_chunk = |chunk: &[DirectorySeedJob<'_, '_>], offset: usize| {
+        let mut completed = Vec::new();
+        let result = (|| -> Result<()> {
+            for (index, job) in chunk.iter().enumerate() {
+                if stopped.load(Ordering::Relaxed) || signal.load(Ordering::Relaxed) != 0 {
+                    break;
+                }
+                for donor in &job.donors {
+                    let Some(result) = platform::clone_directory_new(
+                        &donor.path,
+                        target,
+                        &job.path,
+                        &job.entries,
+                        mask,
+                        (offset + index) as u64,
+                        signal,
+                    )?
+                    else {
+                        continue;
+                    };
+                    completed.push((job.path.clone(), result, donor.head.clone()));
+                    break;
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            stopped.store(true, Ordering::Relaxed);
+        }
+        (completed, result)
+    };
+    let results = if workers == 1 {
+        vec![clone_chunk(jobs, 0)]
+    } else {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .chunks(chunk_size)
+                .enumerate()
+                .map(|(index, chunk)| {
+                    let clone_chunk = &clone_chunk;
+                    scope.spawn(move || clone_chunk(chunk, index * chunk_size))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        (
+                            Vec::new(),
+                            Err(Error::Message("directory creation worker panicked".into())),
+                        )
+                    })
+                })
+                .collect()
+        })
+    };
+    let mut cloned = HashSet::new();
+    let mut provenance = HashSet::new();
+    let mut directories = 0;
+    let mut error = None;
+    for (completed, result) in results {
+        for (root, result, source) in completed {
+            let expected: HashSet<_> = result.files.iter().map(|(path, _)| path.clone()).collect();
+            creation.directory_clones.insert(root, expected);
+            for (path, identity) in result.files {
+                creation.owned.insert(path.clone(), identity);
+                cloned.insert(path);
+            }
+            for (path, identity) in result.directories {
+                creation.directories.insert(path, identity);
+            }
+            provenance.insert(source);
+            directories += 1;
+        }
+        if let Err(value) = result {
+            error.get_or_insert(value);
+        }
+    }
+    creation.check_cancelled()?;
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok((cloned, provenance, directories))
 }
 
 struct SeedJob<'a> {
@@ -742,6 +1007,7 @@ mod tests {
                     executable: false,
                     regular: true,
                     gitlink: false,
+                    tree: false,
                 }
             })
             .collect();
@@ -766,6 +1032,7 @@ mod tests {
             admin: root.path().join("admin"),
             owned: HashMap::new(),
             directories: HashMap::new(),
+            directory_clones: HashMap::new(),
             original_directory: None,
             materializing: false,
             complete: false,

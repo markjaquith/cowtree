@@ -21,6 +21,7 @@ pub struct TreeEntry {
     pub executable: bool,
     pub regular: bool,
     pub gitlink: bool,
+    pub tree: bool,
 }
 
 pub fn output<I, S>(cwd: &Path, args: I) -> Result<Vec<u8>>
@@ -79,6 +80,7 @@ pub fn parse_tree(raw: Vec<u8>) -> Result<Vec<TreeEntry>> {
                 executable: fields[0] == b"100755",
                 regular: matches!(fields[0], b"100644" | b"100755"),
                 gitlink: fields[0] == b"160000",
+                tree: fields[0] == b"040000",
             })
         })
         .collect()
