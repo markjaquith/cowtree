@@ -13,6 +13,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--baseline", type=Path)
     parser.add_argument("--files", type=int, default=20000)
     parser.add_argument("--payload-bytes", type=int, default=4096)
     parser.add_argument("--divergence", type=int, default=10, help="percentage of changed target files")
@@ -22,6 +23,7 @@ def main():
     if args.files < 1 or args.payload_bytes < 1 or args.rounds < 1 or not 0 <= args.divergence < 100:
         parser.error("positive files/payload/rounds and divergence 0..99 required")
     binary = args.binary.resolve(strict=True)
+    baseline = args.baseline.resolve(strict=True) if args.baseline else None
     env = os.environ.copy()
     for key in list(env):
         if key.startswith("GIT_"):
@@ -56,6 +58,8 @@ def main():
                 (repo / f"d{i // 100}" / f"file-{i}").write_bytes(b"y" * args.payload_bytes)
             run(repo, "git", "commit", "-qam", "source divergence")
         timings = {"native": [], "native+compact": [], "clone-first": []}
+        if baseline:
+            timings["clone-first-baseline"] = []
         ready_timings = {method: [] for method in timings}
         for round_number in range(args.rounds):
             order = list(timings)
@@ -64,8 +68,9 @@ def main():
             for method in order:
                 target = root / "trial"
                 started = time.perf_counter()
-                if method == "clone-first":
-                    command = [str(binary), "add", "--detach", str(target), "target"]
+                if method.startswith("clone-first"):
+                    executable = baseline if method == "clone-first-baseline" else binary
+                    command = [str(executable), "add", "--detach", str(target), "target"]
                 else:
                     command = ["git", "worktree", "add", "--detach", str(target), "target"]
                 run(repo, *command)
@@ -81,7 +86,7 @@ def main():
                           "including_first_status_seconds": ready_elapsed,
                           "files": args.files, "payload_bytes": args.payload_bytes,
                           "changed_files": changed}
-                if method == "clone-first":
+                if method.startswith("clone-first"):
                     admin = Path(os.fsdecode(run(target, "git", "rev-parse", "--absolute-git-dir").rstrip(b"\n")))
                     receipt = json.loads((admin / "cowtree-creation").read_text())
                     record["cloned_files"] = receipt["cloned_files"]

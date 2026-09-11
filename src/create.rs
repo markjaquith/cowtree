@@ -12,8 +12,9 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use sha2::Digest;
@@ -37,6 +38,45 @@ struct Entry {
 }
 
 type Identity = (u64, u64, u64, i64, i64, i64, i64);
+
+struct Timings {
+    enabled: bool,
+    started: Instant,
+    previous: Instant,
+}
+
+impl Timings {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            enabled: std::env::var_os("COWTREE_TIMING").is_some_and(|value| value != "0"),
+            started: now,
+            previous: now,
+        }
+    }
+
+    fn mark(&mut self, label: &str) {
+        let now = Instant::now();
+        if self.enabled {
+            eprintln!(
+                "cowtree timing: {label}: {:.3} ms (total {:.3} ms)",
+                now.duration_since(self.previous).as_secs_f64() * 1000.0,
+                now.duration_since(self.started).as_secs_f64() * 1000.0,
+            );
+        }
+        self.previous = now;
+    }
+
+    fn worker_time(&self, label: &str, duration: Duration) {
+        if self.enabled {
+            eprintln!(
+                "cowtree timing: {label}: {:.3} ms aggregate worker time",
+                duration.as_secs_f64() * 1000.0,
+            );
+        }
+    }
+}
+
 fn identity(path: &Path) -> Result<Identity> {
     let m = fs::symlink_metadata(path)?;
     Ok((
@@ -173,6 +213,7 @@ impl Creation<'_> {
 }
 
 pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
+    let mut timings = Timings::new();
     let cwd = std::env::current_dir()?.canonicalize()?;
     let path = if add.path.is_absolute() {
         add.path.clone()
@@ -189,6 +230,7 @@ pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
         None,
     )?;
     let mut sources = worktree::parse_porcelain(&sources_raw)?;
+    timings.mark("discover worktrees");
     // Capture umask before starting worker threads. The clone receives the same
     // permission mask as an ordinary checkout's open(O_CREAT).
     let mask = unsafe {
@@ -218,6 +260,7 @@ pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
         if !status.success() {
             return Ok(add::exit_code(status));
         }
+        timings.mark("register worktree");
         let path = path.canonicalize()?;
         let admin = path_output(git.bytes(&path, &["rev-parse", "--absolute-git-dir"], None)?)?;
         let meta = fs::symlink_metadata(&path)?;
@@ -232,9 +275,10 @@ pub fn run(git: &Git, args: &[OsString], add: &Add) -> Result<i32> {
             complete: false,
             cancelled: Arc::clone(&cancelled),
         };
-        let result = creation
-            .remember(Path::new(".git"))
-            .and_then(|()| populate(&mut creation, add, &mut sources, &cwd, mask));
+        let result = creation.remember(Path::new(".git")).and_then(|()| {
+            timings.mark("initialize creation");
+            populate(&mut creation, add, &mut sources, &cwd, mask, &mut timings)
+        });
         if result.is_err() {
             creation.cleanup();
         }
@@ -257,6 +301,7 @@ fn populate(
     sources: &mut [worktree::Worktree],
     cwd: &Path,
     mask: u32,
+    timings: &mut Timings,
 ) -> Result<i32> {
     creation.check_cancelled()?;
     creation.verify_authority()?;
@@ -292,6 +337,7 @@ fn populate(
             Some(&omitted),
         )?;
     }
+    timings.mark("prepare target index");
     let wanted: Vec<_> = entries
         .iter()
         .filter(|entry| included.contains(&entry.path))
@@ -300,6 +346,7 @@ fn populate(
         SystemPlatform.validate(&path, &path)?;
     }
     let safe_attributes = checkout_safe(git, &path, &wanted)?;
+    timings.mark("check checkout attributes");
     // Exact commit first, then the invoking worktree, then deterministic paths.
     sources.sort_by_key(|source| {
         (
@@ -322,6 +369,7 @@ fn populate(
             .collect::<HashMap<_, _>>();
         inventories.push((source, entries));
     }
+    timings.mark("inventory donor trees");
     let mut jobs = Vec::new();
     for entry in &wanted {
         creation.check_cancelled()?;
@@ -342,7 +390,10 @@ fn populate(
             jobs.push(SeedJob { entry, donors });
         }
     }
-    let (cloned, provenance) = seed_jobs(creation, &jobs, mask)?;
+    timings.mark("plan clone jobs");
+    let (cloned, provenance, hash_time) = seed_jobs(creation, &jobs, mask, timings.enabled)?;
+    timings.mark("verify and clone files");
+    timings.worker_time("donor hashing", hash_time);
     if !wanted.is_empty() && cloned.is_empty() {
         return Err(Error::Message("COW creation unavailable: no verified, checkout-compatible source files on the destination APFS volume; no full-copy fallback was used".into()));
     }
@@ -383,7 +434,9 @@ fn populate(
             None,
         )?;
     }
+    timings.mark("materialize remaining files");
     git.bytes(&path, &["update-index", "--refresh"], None)?;
+    timings.mark("refresh index");
     creation.check_cancelled()?;
     creation.verify_authority()?;
     for seed in &cloned {
@@ -415,6 +468,7 @@ fn populate(
             "checkout validation failed; worktree is not clean".into(),
         ));
     }
+    timings.mark("validate checkout");
     if !add.locked {
         git.bytes(&path, &["worktree", "unlock", "."], None)?;
     }
@@ -452,6 +506,7 @@ fn populate(
     {
         eprintln!("cowtree: worktree created, but could not record creation receipt: {error}");
     }
+    timings.mark("finalize and run hook");
     Ok(code)
 }
 
@@ -591,9 +646,10 @@ fn seed_jobs(
     creation: &mut Creation<'_>,
     jobs: &[SeedJob<'_>],
     mask: u32,
-) -> Result<(Vec<PathBuf>, HashSet<String>)> {
+    measure_hashing: bool,
+) -> Result<(Vec<PathBuf>, HashSet<String>, Duration)> {
     if jobs.is_empty() {
-        return Ok((Vec::new(), HashSet::new()));
+        return Ok((Vec::new(), HashSet::new(), Duration::ZERO));
     }
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
@@ -601,6 +657,7 @@ fn seed_jobs(
         .min((jobs.len() / 256).max(1));
     let chunk_size = jobs.len().div_ceil(workers);
     let stopped = AtomicBool::new(false);
+    let hash_nanoseconds = AtomicU64::new(0);
     let target = &creation.path;
     let signal = &creation.cancelled;
     let clone_chunk = |jobs: &[SeedJob<'_>]| {
@@ -615,7 +672,14 @@ fn seed_jobs(
                     // Hash through the pinned source fd. Its identity snapshot
                     // spans both hashing and cloning, including hidden edits.
                     match platform::clone_new(&donor.path, target, &job.entry.path, mode, |file| {
-                        blob_matches(file, &job.entry.oid)
+                        if !measure_hashing {
+                            return blob_matches(file, &job.entry.oid);
+                        }
+                        let started = Instant::now();
+                        let result = blob_matches(file, &job.entry.oid);
+                        let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128);
+                        hash_nanoseconds.fetch_add(elapsed as u64, Ordering::Relaxed);
+                        result
                     })? {
                         CloneOutcome::Cloned => {
                             completed.push((
@@ -676,7 +740,11 @@ fn seed_jobs(
     if let Some(error) = error {
         return Err(error);
     }
-    Ok((paths, sources))
+    Ok((
+        paths,
+        sources,
+        Duration::from_nanos(hash_nanoseconds.load(Ordering::Relaxed)),
+    ))
 }
 
 fn blob_matches(file: &mut File, oid: &str) -> Result<bool> {
@@ -765,7 +833,7 @@ mod tests {
             complete: false,
             cancelled: Arc::new(AtomicUsize::new(0)),
         };
-        assert!(seed_jobs(&mut creation, &jobs, 0o022).is_err());
+        assert!(seed_jobs(&mut creation, &jobs, 0o022, false).is_err());
         assert_eq!(fs::read(target.join("file-700")).unwrap(), b"external");
         let files: Vec<_> = fs::read_dir(&target)
             .unwrap()

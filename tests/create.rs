@@ -57,7 +57,8 @@ fn command(cwd: &Path, executable: &str) -> Command {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_CONFIG_COUNT");
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("COWTREE_TIMING");
     command
 }
 fn git(cwd: &Path, args: &[&str]) -> Vec<u8> {
@@ -165,6 +166,35 @@ fn clone_first_is_clean_and_independent_and_has_creation_status() {
     let json: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
     assert_eq!(json["results"].as_array().unwrap().len(), 1);
     assert_eq!(json["results"][0]["branch"], "feature");
+}
+
+#[test]
+fn creation_timing_is_opt_in() {
+    let f = Fixture::new();
+    if !apfs(&f.repo) {
+        return;
+    }
+    let ordinary = f.add("ordinary", &["-b", "ordinary"]);
+    success(&ordinary);
+    assert!(!String::from_utf8_lossy(&ordinary.stderr).contains("cowtree timing:"));
+
+    let timed = command(&f.repo, env!("CARGO_BIN_EXE_cowtree"))
+        .env("COWTREE_TIMING", "1")
+        .args(["add", "-b", "timed"])
+        .arg(f.target("timed"))
+        .output()
+        .unwrap();
+    success(&timed);
+    let stderr = String::from_utf8_lossy(&timed.stderr);
+    for phase in [
+        "discover worktrees",
+        "verify and clone files",
+        "donor hashing",
+        "refresh index",
+        "finalize and run hook",
+    ] {
+        assert!(stderr.contains(phase), "missing timing phase {phase:?}");
+    }
 }
 
 #[test]

@@ -9,6 +9,7 @@ cargo build --release
 python3 benchmarks/create.py target/release/cowtree --rounds 3
 python3 benchmarks/create.py target/release/cowtree --divergence 0 --files 100000
 python3 benchmarks/create.py target/release/cowtree --files 1000 --payload-bytes 1048576
+python3 benchmarks/create.py candidate/cowtree --baseline baseline/cowtree
 ```
 
 This separate benchmark compares native `git worktree add`, native add followed
@@ -28,6 +29,18 @@ measurements and do not measure device writes or prove unique physical savings.
 In particular, `du` attributes shared blocks to both clones. Record hardware,
 filesystem, Git version, and repeated timings; source hashing and filesystem
 metadata operations can outweigh avoided writes on some checkout shapes.
+
+For opt-in phase timings from a real creation, set `COWTREE_TIMING=1`:
+
+```sh
+COWTREE_TIMING=1 cowtree add ../feature -b feature
+```
+
+Timing lines go to stderr and include worktree discovery and registration, index
+preparation, attribute and donor inventories, clone planning, clone-phase wall
+time, aggregate donor-hashing worker time, Git materialization, index refresh,
+validation, hooks, and receipt finalization. Aggregate hashing time is summed
+across clone workers and can therefore exceed clone-phase wall time.
 
 ### Creation reference measurements: September 10, 2026
 
@@ -230,3 +243,55 @@ Recursive cloning still traverses every entry, does so serially within each
 hierarchy, and then makes Git traverse the result again during reset. Splitting
 top-level directories recovered some time but did not outperform the existing
 parallel per-file implementation.
+
+## Rejected clone-then-verify experiment: September 10, 2026
+
+**Decision: retain pre-clone donor hashing.** Removing it produced only a
+negligible small-file improvement and a modest large-file improvement, which
+did not justify the additional mismatch-recovery path.
+
+The prototype cloned candidate files without first hashing their contents, kept
+the existing source and destination identity checks, and relied on
+`git update-index --refresh` to verify the resulting clones. If refresh found a
+mismatch, Cowtree identified the changed clones, removed them, materialized
+those paths from Git, refreshed the index again, and excluded the replacements
+from the creation receipt. Existing dirty-donor, race, sparse-checkout, filter,
+SHA-256, and receipt tests passed, as did Clippy.
+
+On an Apple M4 Pro, macOS 26.6.2, APFS, and Git 2.55.0, candidate and baseline
+binaries ran against the same disposable fixture in alternating order for
+three rounds:
+
+| Fixture                          | Baseline median | Clone-then-verify median | Improvement |
+| -------------------------------- | --------------: | -----------------------: | ----------: |
+| 20,000 × 4 KiB, 10% divergent    |          4.94 s |                   4.88 s |        1.2% |
+| 1,000 × 1 MiB, 10% divergent     |          2.98 s |                   2.73 s |        8.2% |
+| 1,000 × 1 MiB, identical commit  |          3.09 s |                   2.90 s |        6.2% |
+
+Git's mandatory destination verification remains the dominant content pass.
+Avoiding the donor hash helps more for large payloads, but it does not address
+the metadata and per-file cloning costs that dominate large file-count
+worktrees. The prototype was removed.
+
+## Unsafe creation performance ceiling: September 10, 2026
+
+An intentionally unsafe prototype established the available optimization
+ceiling by removing donor hashing, descriptor pinning, metadata screening,
+permission and timestamp normalization, and source/target race checks. It used
+direct path-based `clonefile`, while retaining Cowtree's inventories, four clone
+workers, Git index refresh, final status validation, and receipt work. This path
+was benchmark-only and was removed after measurement.
+
+On an Apple M4 Pro, macOS 26.6.2, APFS, and Git 2.55.0, unsafe and baseline
+binaries ran against the same disposable fixture in alternating order for
+three rounds:
+
+| Fixture                       | Baseline median | Unsafe ceiling median | Maximum improvement |
+| ----------------------------- | --------------: | --------------------: | ------------------: |
+| 20,000 × 4 KiB, 10% divergent |          5.05 s |                3.71 s |               26.6% |
+| 1,000 × 1 MiB, 10% divergent  |          3.00 s |                2.68 s |               10.6% |
+
+The ceiling is meaningful for high file counts but not for large payloads.
+Future work should target the per-file safety and metadata operations as a
+group. Hash elimination alone cannot approach the small-file ceiling, and the
+unsafe implementation is not suitable for production.
