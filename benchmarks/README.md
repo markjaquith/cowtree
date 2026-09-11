@@ -140,12 +140,14 @@ The production implementation applies that design only to identical,
 checkout-safe subtrees containing at least 32 files. It clones from a pinned
 source descriptor into a private sibling, validates the exact hierarchy and all
 file bytes, normalizes native modes and timestamps, then installs the directory
-with an exclusive rename. Four bounded workers process independent subtrees;
-failed metadata or hierarchy validation falls back to the existing per-file
-path. Against the same 20,000-file clustered fixture, three alternating warm
-rounds improved median command time from 4.15 seconds to 2.74 seconds (34.0%)
-and time through the first `git status` from 4.20 seconds to 2.79 seconds
-(33.6%). Both versions verified 18,000 clones.
+with an exclusive rename. Bounded workers process independent subtrees; failed
+metadata or hierarchy validation falls back to the existing per-file path.
+Against the same 20,000-file clustered fixture, the initial four-worker version
+improved median command time from 4.15 seconds to 2.74 seconds (34.0%) and time
+through the first `git status` from 4.20 seconds to 2.79 seconds (33.6%).
+Raising the directory-worker cap to eight produced a further paired improvement
+from 2.86 seconds to 2.56 seconds (10.4%), and from 2.91 seconds to 2.62 seconds
+(10.1%) through status. Every version verified 18,000 clones.
 
 ### Creation reference measurements: September 10, 2026
 

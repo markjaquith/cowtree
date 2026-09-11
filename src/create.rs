@@ -22,7 +22,7 @@ use crate::{
     error::{Error, Result},
     git::{TreeEntry as Entry, nul_paths, parse_tree as tree},
     platform::{self, CloneOutcome, ClonePlatform, SystemPlatform},
-    receipt, worktree,
+    receipt, tuning, worktree,
 };
 
 type Identity = platform::FileIdentity;
@@ -690,8 +690,6 @@ fn checkout_safe(git: &Git, path: &Path, entries: &[&Entry]) -> Result<HashSet<P
     Ok(safe)
 }
 
-const MIN_DIRECTORY_CLONE_FILES: usize = 32;
-
 struct DirectorySeedJob<'entry, 'donor> {
     path: PathBuf,
     entries: Vec<&'entry Entry>,
@@ -736,7 +734,7 @@ fn plan_directory_jobs<'entry, 'donor>(
             continue;
         }
         let children = &descendants[&directory.path];
-        if children.len() < MIN_DIRECTORY_CLONE_FILES
+        if children.len() < tuning::DIRECTORY_CLONE_MIN_FILES
             || children.iter().any(|entry| {
                 !entry.regular
                     || !wanted.contains(entry.path.as_path())
@@ -775,10 +773,7 @@ fn seed_directory_jobs(
     if jobs.is_empty() {
         return Ok((HashSet::new(), HashSet::new(), 0));
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(4)
-        .min(jobs.len());
+    let workers = tuning::directory_clone_workers(jobs.len());
     let chunk_size = jobs.len().div_ceil(workers);
     let stopped = AtomicBool::new(false);
     let target = &creation.path;

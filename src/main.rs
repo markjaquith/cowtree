@@ -8,6 +8,7 @@ mod git;
 mod output;
 mod platform;
 mod receipt;
+mod tuning;
 mod worktree;
 
 fn main() {
