@@ -276,6 +276,30 @@ fn compact_all_compacts_new_worktrees_and_skips_current_receipts() {
     );
     assert!(!stdout.contains("current receipt"));
     assert!(stdout.contains("Done"));
+
+    let recompact = compact(&repo, &["compact", "--all", "--recompact", "--json"]);
+    assert!(
+        recompact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recompact.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&recompact.stdout).unwrap();
+    assert_eq!(
+        json["summary"],
+        serde_json::json!({
+            "compacted": 3,
+            "already_compacted": 0,
+            "dry_run": 0,
+            "failed": 0
+        })
+    );
+    assert!(
+        json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| result["cloned_files"] == 1)
+    );
 }
 
 #[test]

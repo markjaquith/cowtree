@@ -62,6 +62,9 @@ struct OperationArgs {
     /// Calculate candidates without cloning (compact only)
     #[usage(long)]
     dry_run: bool,
+    /// Reprocess targets with current compaction receipts
+    #[usage(long)]
+    recompact: bool,
 }
 
 #[derive(Debug, Args)]
@@ -130,7 +133,7 @@ fn run_compact(cwd: &Path, worktrees: &[Worktree], args: OperationArgs) -> Resul
     let mut summary = CompactSummary::default();
     let mut ui = CompactUi::new();
     for (index, target) in targets.into_iter().enumerate() {
-        if args.all && compact::is_current_receipt(target) {
+        if args.all && !args.recompact && compact::is_current_receipt(target) {
             summary.already_compacted += 1;
             if !args.json {
                 ui.already_compacted(index + 1, total, &target.label());

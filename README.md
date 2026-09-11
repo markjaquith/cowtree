@@ -33,6 +33,9 @@ cowtree compact feature/my-branch --dry-run
 # Compact every eligible worktree in the current repo
 cowtree compact --all
 
+# Reprocess every worktree, including current compaction receipts
+cowtree compact --all --recompact
+
 # Show compaction status
 cowtree status --all
 ```
@@ -69,7 +72,9 @@ Multi-donor receipts remain current while the target commit is unchanged;
 moving or deleting a donor does not invalidate existing shared blocks.
 
 `--all` skips worktrees with current compaction receipts. `--dry-run` reports
-eligible files and attributed storage without modifying anything.
+eligible files and attributed storage without modifying anything. Use
+`--recompact` with `--all` to ignore current receipts and attempt to maximize
+sharing again after files or available donors have changed.
 
 > [!NOTE]
 >
