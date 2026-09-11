@@ -103,6 +103,24 @@ fn add_is_a_top_level_command_and_git_is_not_shadowed() {
 }
 
 #[test]
+fn compact_explains_that_the_default_source_must_be_checked_out() {
+    let f = Fixture::new();
+    let target = f.target("target");
+    git(
+        &f.repo,
+        &["worktree", "add", "-b", "target", target.to_str().unwrap()],
+    );
+    git(&f.repo, &["switch", "-c", "active"]);
+    let output = f.cow(&["compact", target.to_str().unwrap(), "--dry-run"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "default source branch 'main' is not checked out; create a worktree for it or pass --source <checked-out-branch-or-path>"
+        )
+    );
+}
+
+#[test]
 fn no_checkout_and_orphan_keep_native_empty_semantics() {
     let f = Fixture::new();
     success(&f.add("empty", &["--no-checkout", "-b", "empty"]));

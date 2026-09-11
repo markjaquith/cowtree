@@ -62,7 +62,9 @@ back to an ordinary checkout.
 > skips affected files, but a small unavoidable race window remains.
 
 The source defaults to `origin/HEAD`, then `main`, then `master`. It must be
-clean, checked out, and on the same APFS volume as the target.
+clean, checked out, and on the same APFS volume as the target. If the default
+branch is not checked out, create a worktree for it or select another clean
+worktree with `--source`.
 
 `--all` skips worktrees with current compaction receipts. `--dry-run` reports
 eligible files and attributed storage without modifying anything.

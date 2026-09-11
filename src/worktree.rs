@@ -131,15 +131,22 @@ pub fn default_source(worktrees: &[Worktree], cwd: &Path) -> Result<Worktree> {
         ["main", "master"]
             .into_iter()
             .find(|name| {
-                worktrees
-                    .iter()
-                    .any(|wt| wt.branch.as_deref() == Some(*name))
+                let reference = format!("refs/heads/{name}^{{commit}}");
+                git::text(cwd, ["rev-parse", "--verify", &reference]).is_ok()
             })
             .map(str::to_owned)
     })
     .ok_or_else(|| {
         Error::Message("could not infer source branch from origin/HEAD, main, or master".into())
     })?;
+    if !worktrees
+        .iter()
+        .any(|worktree| worktree.branch.as_deref() == Some(&inferred))
+    {
+        return Err(Error::Message(format!(
+            "default source branch '{inferred}' is not checked out; create a worktree for it or pass --source <checked-out-branch-or-path>"
+        )));
+    }
     resolve(worktrees, Path::new(&inferred)).cloned()
 }
 
