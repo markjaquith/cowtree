@@ -98,8 +98,177 @@ cowtree status --all</code></pre>
         <p>Linux users go away &mdash; you can just use <a href="https://btrfs.readthedocs.io/en/latest/">btrfs</a>.</p>
       </footer>
     </main>
+
+    <div class="grass" aria-hidden="true">
+      <canvas></canvas>
+    </div>
   </body>
 </html>
+
+<script>
+  const canvas = document.querySelector<HTMLCanvasElement>(".grass canvas");
+
+  if (canvas) {
+    const context = canvas.getContext("2d");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const layerSettings = [
+      {
+        density: 0.15,
+        minHeight: 0.28,
+        heightRange: 0.32,
+        minWidth: 1.8,
+        widthRange: 2.2,
+        opacity: 0.62,
+        colors: ["#47772f", "#558437", "#63913d"],
+      },
+      {
+        density: 0.2,
+        minHeight: 0.4,
+        heightRange: 0.36,
+        minWidth: 2.6,
+        widthRange: 2.8,
+        opacity: 0.82,
+        colors: ["#347229", "#428531", "#55983a"],
+      },
+      {
+        density: 0.25,
+        minHeight: 0.52,
+        heightRange: 0.42,
+        minWidth: 3.4,
+        widthRange: 3.4,
+        opacity: 1,
+        colors: ["#255f21", "#337329", "#428631", "#58a13d"],
+      },
+    ];
+    let width = 0;
+    let height = 0;
+    let animationFrame = 0;
+    let visible = true;
+    let blades: ReturnType<typeof createBlades> = [];
+
+    const random = (index: number, seed: number) => {
+      const value = Math.sin(index * seed) * 10000;
+      return value - Math.floor(value);
+    };
+
+    function createBlades(canvasWidth: number) {
+      return layerSettings.flatMap((settings, layer) => {
+        const overscan = 0.05;
+        const fieldWidth = 1 + overscan * 2;
+        const count = Math.ceil(canvasWidth * fieldWidth * settings.density);
+
+        return Array.from({ length: count }, (_, index) => {
+          const seedIndex = index + layer * 521;
+          const depth = random(seedIndex, 78.901);
+
+          return {
+            x: -overscan + ((index + random(seedIndex, 12.345) * 0.95) / count) * fieldWidth,
+            height: settings.minHeight + random(seedIndex, 23.456) * settings.heightRange,
+            width: settings.minWidth + depth * settings.widthRange,
+            depth,
+            layer,
+            opacity: settings.opacity,
+            phaseJitter: (random(seedIndex, 42.813) - 0.5) * 1.1,
+            color:
+              settings.colors[
+                Math.min(settings.colors.length - 1, Math.floor(depth * settings.colors.length))
+              ],
+          };
+        }).sort((a, b) => a.depth - b.depth);
+      });
+    }
+
+    const resize = () => {
+      if (!context) return;
+
+      const bounds = canvas.getBoundingClientRect();
+      const scale = Math.min(window.devicePixelRatio || 1, 2);
+      width = bounds.width;
+      height = bounds.height;
+      blades = createBlades(width);
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      context.setTransform(scale, 0, 0, scale, 0, 0);
+      draw(0);
+    };
+
+    const draw = (time: number) => {
+      if (!context) return;
+
+      context.clearRect(0, 0, width, height);
+
+      const seconds = time / 1000;
+      const gust =
+        0.48 + Math.sin(seconds * 0.42) * 0.16 + Math.sin(seconds * 0.17 + 2) * 0.12;
+
+      for (const blade of blades) {
+        const bladeHeight = height * blade.height * (0.86 + blade.depth * 0.14);
+        const baseX = blade.x * width;
+        const baseY = height + 4;
+        const travelingWave = Math.sin(
+          seconds * (1.12 + blade.layer * 0.13) -
+            blade.x * Math.PI * 5.5 +
+            blade.phaseJitter,
+        );
+        const fineRipple = Math.sin(seconds * 2.15 - blade.x * Math.PI * 10 + blade.phaseJitter);
+        const wave = reducedMotion.matches
+          ? bladeHeight * (0.07 + Math.sin(blade.x * Math.PI * 5) * 0.025)
+          : bladeHeight *
+            (0.045 +
+              gust * (0.12 + blade.layer * 0.015) +
+              travelingWave * (0.035 + gust * 0.07) +
+              fineRipple * 0.018);
+        const halfWidth = blade.width / 2;
+
+        context.beginPath();
+        context.moveTo(baseX - halfWidth, baseY);
+        context.bezierCurveTo(
+          baseX - halfWidth * 0.8,
+          baseY - bladeHeight * 0.4,
+          baseX + wave * 0.35 - halfWidth * 0.35,
+          baseY - bladeHeight * 0.76,
+          baseX + wave,
+          baseY - bladeHeight,
+        );
+        context.bezierCurveTo(
+          baseX + wave * 0.35 + halfWidth * 0.2,
+          baseY - bladeHeight * 0.74,
+          baseX + halfWidth * 0.8,
+          baseY - bladeHeight * 0.38,
+          baseX + halfWidth,
+          baseY,
+        );
+        context.closePath();
+        context.globalAlpha = blade.opacity * (0.82 + blade.depth * 0.18);
+        context.fillStyle = blade.color;
+        context.fill();
+      }
+      context.globalAlpha = 1;
+    };
+
+    const animate = (time: number) => {
+      draw(time);
+      if (visible && !reducedMotion.matches) {
+        animationFrame = requestAnimationFrame(animate);
+      }
+    };
+
+    const updateAnimation = () => {
+      cancelAnimationFrame(animationFrame);
+      draw(0);
+      if (visible && !reducedMotion.matches) {
+        animationFrame = requestAnimationFrame(animate);
+      }
+    };
+
+    new ResizeObserver(resize).observe(canvas);
+    new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      updateAnimation();
+    }).observe(canvas);
+    reducedMotion.addEventListener("change", updateAnimation);
+  }
+</script>
 
 <style>
   :root {
@@ -115,10 +284,14 @@ cowtree status --all</code></pre>
   }
 
   body {
+    display: flex;
+    min-height: 100vh;
     margin: 0;
+    flex-direction: column;
   }
 
   main {
+    flex: 1;
     width: min(100% - 2rem, 46rem);
     margin: 0 auto;
     padding: 6rem 0 3rem;
@@ -249,6 +422,20 @@ cowtree status --all</code></pre>
     border-top: 1px solid #ced3c8;
     color: #677069;
     font-size: 0.9rem;
+  }
+
+  .grass {
+    width: 100%;
+    height: clamp(9rem, 18vw, 13rem);
+    margin-top: -0.75rem;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .grass canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 
   @media (max-width: 34rem) {
