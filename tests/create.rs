@@ -190,6 +190,9 @@ fn creation_timing_is_opt_in() {
         "discover worktrees",
         "verify and clone files",
         "donor hashing",
+        "clone source metadata/xattrs",
+        "APFS clone syscall",
+        "clone postflight validation",
         "refresh index",
         "finalize and run hook",
     ] {

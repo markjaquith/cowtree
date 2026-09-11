@@ -12,7 +12,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -391,9 +391,11 @@ fn populate(
         }
     }
     timings.mark("plan clone jobs");
-    let (cloned, provenance, hash_time) = seed_jobs(creation, &jobs, mask, timings.enabled)?;
+    let (cloned, provenance, clone_timings) = seed_jobs(creation, &jobs, mask, timings.enabled)?;
     timings.mark("verify and clone files");
-    timings.worker_time("donor hashing", hash_time);
+    for (label, duration) in clone_timings {
+        timings.worker_time(label, duration);
+    }
     if !wanted.is_empty() && cloned.is_empty() {
         return Err(Error::Message("COW creation unavailable: no verified, checkout-compatible source files on the destination APFS volume; no full-copy fallback was used".into()));
     }
@@ -642,14 +644,16 @@ struct SeedJob<'a> {
     donors: Vec<&'a worktree::Worktree>,
 }
 
+type SeedResult = (Vec<PathBuf>, HashSet<String>, Vec<(&'static str, Duration)>);
+
 fn seed_jobs(
     creation: &mut Creation<'_>,
     jobs: &[SeedJob<'_>],
     mask: u32,
-    measure_hashing: bool,
-) -> Result<(Vec<PathBuf>, HashSet<String>, Duration)> {
+    measure_timings: bool,
+) -> Result<SeedResult> {
     if jobs.is_empty() {
-        return Ok((Vec::new(), HashSet::new(), Duration::ZERO));
+        return Ok((Vec::new(), HashSet::new(), Vec::new()));
     }
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
@@ -657,11 +661,13 @@ fn seed_jobs(
         .min((jobs.len() / 256).max(1));
     let chunk_size = jobs.len().div_ceil(workers);
     let stopped = AtomicBool::new(false);
-    let hash_nanoseconds = AtomicU64::new(0);
+    let clone_timings = platform::CloneTimings::new();
+    let measured = measure_timings.then_some(&clone_timings);
     let target = &creation.path;
     let signal = &creation.cancelled;
     let clone_chunk = |jobs: &[SeedJob<'_>]| {
         let mut completed = Vec::new();
+        let mut directories = platform::CloneDirectoryCache::new();
         let result = (|| -> Result<()> {
             for job in jobs {
                 if stopped.load(Ordering::Relaxed) || signal.load(Ordering::Relaxed) != 0 {
@@ -671,16 +677,15 @@ fn seed_jobs(
                 for donor in &job.donors {
                     // Hash through the pinned source fd. Its identity snapshot
                     // spans both hashing and cloning, including hidden edits.
-                    match platform::clone_new(&donor.path, target, &job.entry.path, mode, |file| {
-                        if !measure_hashing {
-                            return blob_matches(file, &job.entry.oid);
-                        }
-                        let started = Instant::now();
-                        let result = blob_matches(file, &job.entry.oid);
-                        let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128);
-                        hash_nanoseconds.fetch_add(elapsed as u64, Ordering::Relaxed);
-                        result
-                    })? {
+                    match platform::clone_new(
+                        &donor.path,
+                        target,
+                        &job.entry.path,
+                        mode,
+                        &mut directories,
+                        measured,
+                        |file| blob_matches(file, &job.entry.oid),
+                    )? {
                         CloneOutcome::Cloned => {
                             completed.push((
                                 job.entry.path.clone(),
@@ -740,11 +745,7 @@ fn seed_jobs(
     if let Some(error) = error {
         return Err(error);
     }
-    Ok((
-        paths,
-        sources,
-        Duration::from_nanos(hash_nanoseconds.load(Ordering::Relaxed)),
-    ))
+    Ok((paths, sources, clone_timings.summary()))
 }
 
 fn blob_matches(file: &mut File, oid: &str) -> Result<bool> {

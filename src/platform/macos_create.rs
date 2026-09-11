@@ -10,13 +10,14 @@ use std::{
             fs::{MetadataExt, OpenOptionsExt},
         },
     },
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
+    time::Instant,
 };
 
 use crate::{
     eligibility::validate_relative,
     error::{Error, Result},
-    platform::CloneOutcome,
+    platform::{CloneOutcome, ClonePhase, CloneTimings},
 };
 use std::os::macos::fs::MetadataExt as _;
 
@@ -33,14 +34,14 @@ fn name(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::UnsafePath(path.to_owned()))
 }
 
-/// Walk existing parents without following links. Creation owns directory setup;
-/// workers must not recreate a parent that disappeared after that setup.
-fn parent(root: &Path, relative: &Path) -> Result<File> {
+/// Walk an existing relative directory without following links. Creation owns
+/// directory setup; workers must not recreate a parent that disappeared.
+fn open_parent(root: &Path, relative: &Path) -> Result<File> {
     let mut directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(root)?;
-    for component in relative.parent().unwrap_or(Path::new("")).components() {
+    for component in relative.components() {
         if component == Component::CurDir {
             continue;
         }
@@ -60,6 +61,48 @@ fn parent(root: &Path, relative: &Path) -> Result<File> {
     Ok(directory)
 }
 
+struct ParentCache {
+    root: PathBuf,
+    relative: PathBuf,
+    directory: Option<File>,
+}
+
+impl ParentCache {
+    fn new() -> Self {
+        Self {
+            root: PathBuf::new(),
+            relative: PathBuf::new(),
+            directory: None,
+        }
+    }
+
+    fn get(&mut self, root: &Path, relative: &Path) -> Result<&File> {
+        let relative = relative.parent().unwrap_or(Path::new(""));
+        if self.directory.is_none() || self.root != root || self.relative != relative {
+            self.directory = Some(open_parent(root, relative)?);
+            self.root.clear();
+            self.root.push(root);
+            self.relative.clear();
+            self.relative.push(relative);
+        }
+        Ok(self.directory.as_ref().unwrap())
+    }
+}
+
+pub struct CloneDirectoryCache {
+    source: ParentCache,
+    target: ParentCache,
+}
+
+impl CloneDirectoryCache {
+    pub fn new() -> Self {
+        Self {
+            source: ParentCache::new(),
+            target: ParentCache::new(),
+        }
+    }
+}
+
 fn identity(meta: &fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
     (
         meta.dev(),
@@ -77,12 +120,18 @@ pub fn clone_new(
     target: &Path,
     relative: &Path,
     mode: u32,
+    directories: &mut CloneDirectoryCache,
+    timings: Option<&CloneTimings>,
     verify: impl FnOnce(&mut File) -> Result<bool>,
 ) -> Result<CloneOutcome> {
     validate_relative(relative)?;
-    let source_parent = match parent(source, relative) {
+    let phase = start(timings);
+    let source_parent = match directories.source.get(source, relative) {
         Ok(parent) => parent,
-        Err(_) => return Ok(CloneOutcome::NotRegular),
+        Err(_) => {
+            finish(timings, ClonePhase::SourceLookup, phase);
+            return Ok(CloneOutcome::NotRegular);
+        }
     };
     let basename = name(Path::new(
         relative
@@ -96,31 +145,48 @@ pub fn clone_new(
             libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
         )
     };
+    finish(timings, ClonePhase::SourceLookup, phase);
     if fd < 0 {
         return Ok(CloneOutcome::NotRegular);
     }
     let mut file = unsafe { File::from_raw_fd(fd) };
+    let phase = start(timings);
     let before = file.metadata()?;
     // clonefile copies xattrs and file flags. Such files go through Git rather
     // than carrying source-only metadata into a fresh checkout.
-    if !before.is_file() || before.st_flags() != 0 || !ordinary_attributes(fd) {
+    let ordinary = ordinary_attributes(fd);
+    finish(timings, ClonePhase::SourceMetadata, phase);
+    if !before.is_file() || before.st_flags() != 0 || !ordinary {
         return Ok(CloneOutcome::NotRegular);
     }
-    if !verify(&mut file)? {
+    let phase = start(timings);
+    let verified = verify(&mut file);
+    finish(timings, ClonePhase::DonorVerification, phase);
+    if !verified? {
         return Ok(CloneOutcome::NotRegular);
     }
-    if identity(&before) != identity(&file.metadata()?) {
+    let phase = start(timings);
+    let stable = identity(&before) == identity(&file.metadata()?);
+    finish(timings, ClonePhase::SourceStability, phase);
+    if !stable {
         return Ok(CloneOutcome::ChangedDuringClone);
     }
-    let destination = parent(target, relative)?;
+    let phase = start(timings);
+    let destination = directories.target.get(target, relative)?;
+    finish(timings, ClonePhase::TargetLookup, phase);
     // CLONE_NOOWNERCOPY; without CLONE_ACL the destination inherits its own
     // directory's ACL, just as open(O_CREAT) would.
-    if unsafe { fclonefileat(fd, destination.as_raw_fd(), basename.as_ptr(), 2) } != 0 {
+    let phase = start(timings);
+    let cloned = unsafe { fclonefileat(fd, destination.as_raw_fd(), basename.as_ptr(), 2) };
+    let clone_error = (cloned != 0).then(io::Error::last_os_error);
+    finish(timings, ClonePhase::CloneFile, phase);
+    if let Some(source) = clone_error {
         return Err(Error::Clone {
             path: relative.to_owned(),
-            source: io::Error::last_os_error(),
+            source,
         });
     }
+    let phase = start(timings);
     let destination_fd = unsafe {
         libc::openat(
             destination.as_raw_fd(),
@@ -133,7 +199,9 @@ pub fn clone_new(
     }
     let cloned = unsafe { File::from_raw_fd(destination_fd) };
     let cloned_identity = identity(&cloned.metadata()?);
-    let result = (|| {
+    finish(timings, ClonePhase::DestinationLookup, phase);
+    let phase = start(timings);
+    let mut result = (|| {
         if identity(&before) != identity(&file.metadata()?)
             || !fs::symlink_metadata(source.join(relative))
                 .is_ok_and(|after| identity(&before) == identity(&after))
@@ -147,13 +215,18 @@ pub fn clone_new(
         {
             return Err(Error::UnsafePath(relative.to_owned()));
         }
+        Ok(CloneOutcome::Cloned)
+    })();
+    finish(timings, ClonePhase::RaceValidation, phase);
+    if matches!(result, Ok(CloneOutcome::Cloned)) {
+        let phase = start(timings);
         if unsafe { libc::fchmod(destination_fd, mode as libc::mode_t) } != 0
             || unsafe { libc::futimens(destination_fd, std::ptr::null()) } != 0
         {
-            return Err(io::Error::last_os_error().into());
+            result = Err(io::Error::last_os_error().into());
         }
-        Ok(CloneOutcome::Cloned)
-    })();
+        finish(timings, ClonePhase::MetadataFinalization, phase);
+    }
     if !matches!(result, Ok(CloneOutcome::Cloned)) {
         // Do not delete a replacement installed by another process. There is
         // still a final name-check/unlink race, as with compaction's rename.
@@ -176,6 +249,16 @@ pub fn clone_new(
         }
     }
     result
+}
+
+fn start(timings: Option<&CloneTimings>) -> Option<Instant> {
+    timings.map(|_| Instant::now())
+}
+
+fn finish(timings: Option<&CloneTimings>, phase: ClonePhase, started: Option<Instant>) {
+    if let (Some(timings), Some(started)) = (timings, started) {
+        timings.record(phase, started.elapsed());
+    }
 }
 
 fn ordinary_attributes(fd: libc::c_int) -> bool {
@@ -211,15 +294,35 @@ mod tests {
         fs::create_dir(&source).unwrap();
         fs::create_dir(&target).unwrap();
         fs::write(source.join("file"), "before").unwrap();
-        let result = clone_new(&source, &target, Path::new("file"), 0o644, |_| {
-            fs::write(source.join("file"), "modified during verification")?;
-            Ok(true)
-        })
+        let mut directories = CloneDirectoryCache::new();
+        let result = clone_new(
+            &source,
+            &target,
+            Path::new("file"),
+            0o644,
+            &mut directories,
+            None,
+            |_| {
+                fs::write(source.join("file"), "modified during verification")?;
+                Ok(true)
+            },
+        )
         .unwrap();
         assert_eq!(result, CloneOutcome::ChangedDuringClone);
         assert!(!target.join("file").exists());
         fs::write(target.join("file"), "external").unwrap();
-        assert!(clone_new(&source, &target, Path::new("file"), 0o644, |_| Ok(true)).is_err());
+        assert!(
+            clone_new(
+                &source,
+                &target,
+                Path::new("file"),
+                0o644,
+                &mut directories,
+                None,
+                |_| Ok(true),
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(target.join("file")).unwrap(), b"external");
     }
 
@@ -237,7 +340,19 @@ mod tests {
         fs::create_dir(&outside).unwrap();
         fs::write(source.join("dir/file"), "data").unwrap();
         std::os::unix::fs::symlink(&outside, target.join("dir")).unwrap();
-        assert!(clone_new(&source, &target, Path::new("dir/file"), 0o644, |_| Ok(true)).is_err());
+        let mut directories = CloneDirectoryCache::new();
+        assert!(
+            clone_new(
+                &source,
+                &target,
+                Path::new("dir/file"),
+                0o644,
+                &mut directories,
+                None,
+                |_| Ok(true),
+            )
+            .is_err()
+        );
         assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
     }
 
@@ -252,11 +367,67 @@ mod tests {
         fs::create_dir_all(source.join("dir")).unwrap();
         fs::create_dir_all(target.join("dir")).unwrap();
         fs::write(source.join("dir/file"), "data").unwrap();
-        let result = clone_new(&source, &target, Path::new("dir/file"), 0o644, |_| {
-            fs::remove_dir(target.join("dir"))?;
-            Ok(true)
-        });
+        let mut directories = CloneDirectoryCache::new();
+        let result = clone_new(
+            &source,
+            &target,
+            Path::new("dir/file"),
+            0o644,
+            &mut directories,
+            None,
+            |_| {
+                fs::remove_dir(target.join("dir"))?;
+                Ok(true)
+            },
+        );
         assert!(result.is_err());
         assert!(!target.join("dir").exists());
+    }
+
+    #[test]
+    fn cached_parents_still_detect_path_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        if SystemPlatform.validate(root.path(), root.path()).is_err() {
+            return;
+        }
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir_all(source.join("dir")).unwrap();
+        fs::create_dir_all(target.join("dir")).unwrap();
+        for file in ["first", "second"] {
+            fs::write(source.join("dir").join(file), file).unwrap();
+        }
+        let mut directories = CloneDirectoryCache::new();
+        assert_eq!(
+            clone_new(
+                &source,
+                &target,
+                Path::new("dir/first"),
+                0o644,
+                &mut directories,
+                None,
+                |_| Ok(true),
+            )
+            .unwrap(),
+            CloneOutcome::Cloned
+        );
+
+        let displaced = root.path().join("displaced");
+        fs::rename(target.join("dir"), &displaced).unwrap();
+        fs::create_dir(target.join("dir")).unwrap();
+        assert!(
+            clone_new(
+                &source,
+                &target,
+                Path::new("dir/second"),
+                0o644,
+                &mut directories,
+                None,
+                |_| Ok(true),
+            )
+            .is_err()
+        );
+        assert!(!displaced.join("second").exists());
+        assert!(!target.join("dir/second").exists());
     }
 }

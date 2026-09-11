@@ -38,9 +38,60 @@ COWTREE_TIMING=1 cowtree add ../feature -b feature
 
 Timing lines go to stderr and include worktree discovery and registration, index
 preparation, attribute and donor inventories, clone planning, clone-phase wall
-time, aggregate donor-hashing worker time, Git materialization, index refresh,
-validation, hooks, and receipt finalization. Aggregate hashing time is summed
-across clone workers and can therefore exceed clone-phase wall time.
+time, granular aggregate clone-worker times, Git materialization, index refresh,
+validation, hooks, and receipt finalization. Granular worker times cover source
+lookup, metadata and xattrs, donor hashing, stability checks, target lookup, the
+APFS clone syscall, destination inspection, postflight validation, and metadata
+finalization. Aggregate times are summed across workers and can therefore
+exceed clone-phase wall time.
+
+### Granular creation timing reference: September 10, 2026
+
+On an Apple M4 Pro, macOS 26.6.2, APFS, and Git 2.55.0, the two warm rounds of
+a 20,000 × 4 KiB fixture with 10% divergence averaged 3.36 seconds of clone
+phase wall time. Four workers accumulated 12.80 seconds across the internal
+clone phases:
+
+| Clone-worker phase              | Aggregate time | Share |
+| ------------------------------- | -------------: | ----: |
+| APFS clone syscall              |        3.35 s  | 26.2% |
+| Source lookup and open          |        3.20 s  | 25.0% |
+| Target directory lookup         |        1.91 s  | 15.0% |
+| Permissions and timestamps      |        1.58 s  | 12.4% |
+| Destination open and metadata   |        1.30 s  | 10.2% |
+| Source metadata and xattrs      |        1.00 s  |  7.8% |
+| Postflight race validation      |        0.29 s  |  2.3% |
+| Donor hashing                   |        0.15 s  |  1.2% |
+| Preflight source stability      |        0.01 s  |  0.1% |
+
+The aggregate total divided by four closely tracks clone-phase wall time,
+indicating balanced worker utilization. Hashing is not the small-file
+bottleneck. The actionable non-clonefile costs are repeated source and target
+directory traversal, destination inspection, and unconditional permission and
+timestamp updates.
+
+### Creation parent-directory cache: September 10, 2026
+
+**Decision: retain the creation-path cache.** Each clone worker now keeps only
+its current source and target parent directory open. Git tree order groups paths
+by directory, so this removes repeated safe ancestor walks without an
+unbounded file-descriptor cache. Full source and target path checks after each
+clone still detect renamed or replaced cached parents; a dedicated replacement
+test covers cleanup through a displaced target directory.
+
+On the same M4 Pro setup, three alternating paired rounds produced:
+
+| Fixture                       | Baseline median | Cached median | Improvement |
+| ----------------------------- | --------------: | ------------: | ----------: |
+| 20,000 × 4 KiB, 10% divergent |          5.16 s |        4.14 s |       19.7% |
+| 1,000 × 1 MiB, 10% divergent  |          3.02 s |        2.94 s |        2.7% |
+
+For the 20,000-file shape, warm clone-phase wall time fell from 3.36 seconds to
+2.69 seconds. Aggregate target-directory lookup fell from 1.91 seconds to 0.03
+seconds, while source lookup and file open fell from 3.20 seconds to 1.46
+seconds. The source phase still opens each file; only its parent walk is cached.
+The result confirms that repeated directory lookup was a material small-file
+cost, while the large-payload shape remains dominated elsewhere.
 
 ### Creation reference measurements: September 10, 2026
 

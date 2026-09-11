@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use crate::error::Result;
 
@@ -8,6 +12,8 @@ mod macos;
 mod macos_create;
 #[cfg(target_os = "macos")]
 pub use macos::CloneOutcome;
+#[cfg(target_os = "macos")]
+pub use macos_create::CloneDirectoryCache;
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
@@ -15,6 +21,16 @@ pub enum CloneOutcome {
     Cloned,
     ChangedDuringClone,
     NotRegular,
+}
+
+#[cfg(not(target_os = "macos"))]
+pub struct CloneDirectoryCache;
+
+#[cfg(not(target_os = "macos"))]
+impl CloneDirectoryCache {
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 pub trait ClonePlatform {
@@ -29,6 +45,67 @@ pub trait ClonePlatform {
 }
 
 pub struct SystemPlatform;
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum ClonePhase {
+    SourceLookup,
+    SourceMetadata,
+    DonorVerification,
+    SourceStability,
+    TargetLookup,
+    CloneFile,
+    DestinationLookup,
+    RaceValidation,
+    MetadataFinalization,
+}
+
+const CLONE_PHASES: [(ClonePhase, &str); 9] = [
+    (ClonePhase::SourceLookup, "clone source lookup/open"),
+    (ClonePhase::SourceMetadata, "clone source metadata/xattrs"),
+    (ClonePhase::DonorVerification, "donor hashing"),
+    (ClonePhase::SourceStability, "clone preflight stability"),
+    (ClonePhase::TargetLookup, "clone target lookup"),
+    (ClonePhase::CloneFile, "APFS clone syscall"),
+    (
+        ClonePhase::DestinationLookup,
+        "clone destination open/metadata",
+    ),
+    (ClonePhase::RaceValidation, "clone postflight validation"),
+    (
+        ClonePhase::MetadataFinalization,
+        "clone permissions/timestamps",
+    ),
+];
+
+pub struct CloneTimings {
+    nanoseconds: [AtomicU64; CLONE_PHASES.len()],
+}
+
+impl CloneTimings {
+    pub fn new() -> Self {
+        Self {
+            nanoseconds: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    pub fn record(&self, phase: ClonePhase, duration: Duration) {
+        let nanoseconds = duration.as_nanos().min(u64::MAX as u128) as u64;
+        self.nanoseconds[phase as usize].fetch_add(nanoseconds, Ordering::Relaxed);
+    }
+
+    pub fn summary(&self) -> Vec<(&'static str, Duration)> {
+        CLONE_PHASES
+            .iter()
+            .map(|(phase, label)| {
+                (
+                    *label,
+                    Duration::from_nanos(self.nanoseconds[*phase as usize].load(Ordering::Relaxed)),
+                )
+            })
+            .collect()
+    }
+}
 
 pub fn cleanup_stale_clones(
     target: &Path,
@@ -49,13 +126,15 @@ pub fn clone_new(
     target: &Path,
     relative: &Path,
     mode: u32,
+    directories: &mut CloneDirectoryCache,
+    timings: Option<&CloneTimings>,
     verify: impl FnOnce(&mut std::fs::File) -> Result<bool>,
 ) -> Result<CloneOutcome> {
     #[cfg(target_os = "macos")]
-    return macos_create::clone_new(source, target, relative, mode, verify);
+    return macos_create::clone_new(source, target, relative, mode, directories, timings, verify);
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (source, target, relative, mode, verify);
+        let _ = (source, target, relative, mode, directories, timings, verify);
         Err(crate::error::Error::UnsupportedFilesystem(
             "creation requires macOS on APFS".into(),
         ))
